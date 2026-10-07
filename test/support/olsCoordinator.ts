@@ -116,7 +116,7 @@ function readFrames(socket: Duplex, onText: (text: string) => void, onClose: () 
 }
 
 export async function startMockCoordinator(
-  opts: { participants?: number; stateBytes?: number; ticketMs?: number } = {},
+  opts: { participants?: number; stateBytes?: number; ticketMs?: number; port?: number } = {},
 ): Promise<MockCoordinator> {
   const limit = opts.participants ?? 8;
   const stateBytes = opts.stateBytes ?? 1_048_576;
@@ -316,7 +316,7 @@ export async function startMockCoordinator(
     );
   });
 
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  await new Promise<void>((r) => server.listen(opts.port ?? 0, '127.0.0.1', r));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
     url: base,

@@ -2746,10 +2746,14 @@ function onStatus(status: AudioStatus, live = false) {
   // native player and this is the first JS hears of them. Everything the app
   // starts or stops itself has already written the store by now, and a
   // loading or buffering player says nothing either way.
+  // Nor does a source that has not started (a new one reads paused at 0:00
+  // on some platforms before it plays) or one that has run out.
   const nativeTransport =
     status.isLoaded &&
     !status.isBuffering &&
     !status.didJustFinish &&
+    status.playbackState !== 'ended' &&
+    (status.currentTime ?? 0) > 0 &&
     !pauseFadeTimer &&
     status.playing !== prev.isPlaying;
   usePlayerStore.setState({

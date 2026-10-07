@@ -336,9 +336,17 @@ describe('What a guest does with a state', () => {
     const nearEnd = state({ positionMs: 198_500 });
     const ahead = local({ index: 1, positionMs: 200 });
     assert.equal(planOlsGuest(nearEnd, ahead, opts).queue, 'wait');
-    // Not in the middle of the song, and not when the host has stopped.
+    // A host that says it stopped at the very end is between two songs.
+    assert.equal(planOlsGuest(state({ positionMs: 199_500, isPlaying: false }), ahead, opts).queue, 'wait');
+    // Not in the middle of the song, and not when the host paused before the end.
     assert.equal(planOlsGuest(state(), ahead, opts).queue, 'load');
-    assert.equal(planOlsGuest(state({ positionMs: 198_500, isPlaying: false }), ahead, opts).queue, 'load');
+    assert.equal(planOlsGuest(state({ positionMs: 197_000, isPlaying: false }), ahead, opts).queue, 'load');
+  });
+
+  it('plays its own last second out when the host stops at the end of the song', () => {
+    const end = state({ positionMs: 199_200, isPlaying: false });
+    assert.equal(planOlsGuest(end, local({ positionMs: 199_000 }), opts).play, null);
+    assert.equal(planOlsGuest(state({ positionMs: 120_000, isPlaying: false }), local({ positionMs: 120_000 }), opts).play, false);
   });
 
   it('empties when the host does', () => {

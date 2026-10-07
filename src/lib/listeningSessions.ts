@@ -689,14 +689,18 @@ export function planOlsGuest(
   const target = projectOlsPosition(state, opts.serverNow);
   const hostId = state.songIds[state.currentIndex];
   const sameQueue = sameIds(local.songIds, state.songIds);
+  // At the end of its song a host may say it stopped for the instant before
+  // the next one starts: that is not a pause to follow.
+  const hostAtEnd =
+    local.hostSongDurationMs > 0 && target >= local.hostSongDurationMs - OLS_NATURAL_END_WINDOW_MS;
+  const hostEnded = local.hostSongDurationMs > 0 && target >= local.hostSongDurationMs - 1500;
   if (local.songIds[local.index] !== hostId) {
     if (
       sameQueue &&
       local.index === state.currentIndex + 1 &&
-      state.isPlaying &&
+      (state.isPlaying || hostEnded) &&
       local.isPlaying &&
-      local.hostSongDurationMs > 0 &&
-      target >= local.hostSongDurationMs - OLS_NATURAL_END_WINDOW_MS &&
+      hostAtEnd &&
       local.positionMs < OLS_NATURAL_END_WINDOW_MS
     ) {
       return { queue: 'wait', seekMs: null, play: null };
@@ -716,7 +720,9 @@ export function planOlsGuest(
   let play: boolean | null = null;
   if (!opts.awaitingTransport) {
     if (state.isPlaying && !local.isPlaying) play = true;
-    else if (!state.isPlaying && local.isPlaying) play = false;
+    // Its last second is this guest's to hear: the host stopping there is
+    // the song ending, not a pause.
+    else if (!state.isPlaying && local.isPlaying && !hostEnded) play = false;
   }
   return { queue, seekMs: seek, play };
 }

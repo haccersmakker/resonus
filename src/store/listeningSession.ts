@@ -68,6 +68,7 @@ import {
   olsSeek,
   olsSeekIsLocal,
   olsSetPlaying,
+  currentSong,
   usePlayerStore,
   type RepeatMode,
 } from './player';
@@ -306,6 +307,15 @@ const host = (() => {
   /** Where the published window starts in the queue (see `window`). */
   let offset = 0;
   let queued = false;
+  /**
+   * When the host's player last said it stopped, if that has not been told
+   * yet. A player between two sources reads as stopped for a moment (the end
+   * of a song, a stream not started), and a room told so pauses everybody and
+   * starts them again a beat later. A stop is only news once it has lasted.
+   */
+  let stoppedAt = 0;
+  let stoppedTimer: ReturnType<typeof setTimeout> | null = null;
+  const STOP_SETTLE_MS = 450;
 
   /**
    * The queue as the room gets it. All of it, unless it is longer than a room
@@ -334,7 +344,7 @@ const host = (() => {
       songIds: w.ids,
       currentIndex: w.ids.length === 0 ? 0 : index - w.start,
       positionMs: Math.max(0, Math.round(livePositionSec() * 1000)),
-      isPlaying: st.isPlaying,
+      isPlaying: st.isPlaying || stoppedAt > 0,
     };
   }
 
@@ -371,6 +381,29 @@ const host = (() => {
       if (last && usePlayerStore.getState().isBuffering) return;
       if (!last || Date.now() - last.at >= OLS_HEARTBEAT_MS - 200) publish();
     },
+    /** The player says it started or stopped. */
+    transport(playing: boolean): void {
+      if (stoppedTimer) clearTimeout(stoppedTimer);
+      stoppedTimer = null;
+      if (playing) {
+        // Told even when the stop never was: the second it started from is
+        // what the room needs to be on the beat.
+        stoppedAt = 0;
+        this.soon();
+        return;
+      }
+      stoppedAt = Date.now();
+      // The status beats tell it too (`settleStop`), with the screen off where
+      // this timer may not run.
+      stoppedTimer = setTimeout(() => this.settleStop(), STOP_SETTLE_MS);
+    },
+    /** A stop that has lasted is told to the room. */
+    settleStop(): void {
+      if (!stoppedAt || Date.now() - stoppedAt < STOP_SETTLE_MS) return;
+      if (usePlayerStore.getState().isPlaying) return;
+      stoppedAt = 0;
+      publish();
+    },
     /** The player moved on its own: a seek from outside the app, a song repeating. */
     checkJump(): void {
       if (!last || usePlayerStore.getState().isBuffering) return;
@@ -402,6 +435,12 @@ const host = (() => {
           player.jumpTo(control.index + offset);
           break;
       }
+      // A stop asked for is no transient: told now, with nothing to settle.
+      if (control.action === 'pause' || control.action === 'play') {
+        stoppedAt = 0;
+        if (stoppedTimer) clearTimeout(stoppedTimer);
+        stoppedTimer = null;
+      }
       // Even when nothing changed (play on a room already playing): the guest
       // that asked is waiting on a new revision to know it was heard.
       this.soon();
@@ -409,6 +448,9 @@ const host = (() => {
     reset(): void {
       last = null;
       offset = 0;
+      stoppedAt = 0;
+      if (stoppedTimer) clearTimeout(stoppedTimer);
+      stoppedTimer = null;
     },
   };
 })();
@@ -443,6 +485,15 @@ const guest = (() => {
   const quiet = (ms = 2000) => {
     quietUntil = Date.now() + ms;
   };
+
+  /**
+   * How long this phone's player takes from being told to play to sounding,
+   * learned from each start: aiming that far ahead is what keeps a guest from
+   * landing a fixed fifth of a second behind the room every time, which is
+   * under the drift that would ever correct it. Never a speed change.
+   */
+  let leadMs = 0;
+  let calibrated = false;
 
   function serverNow(): number {
     return session ? session.connection.clock.serverNow(Date.now()) : Date.now();
@@ -504,13 +555,13 @@ const guest = (() => {
   }
 
   /**
-   * Waits until the player can play from where it is, or gives up. Checked on
-   * the player's status beats rather than on a timer alone: those keep coming
-   * with the screen off, and timers do not.
+   * Waits until `ok`, or gives up. Checked on the player's status beats rather
+   * than on a timer alone: those keep coming with the screen off, and timers
+   * do not.
    */
-  function ready(stillCurrent: () => boolean, ms: number): Promise<void> {
+  function waitFor(stillCurrent: () => boolean, ok: () => boolean, ms: number): Promise<void> {
     const until = Date.now() + ms;
-    const done = () => !stillCurrent() || olsPlayerReady() || Date.now() >= until;
+    const done = () => !stillCurrent() || ok() || Date.now() >= until;
     if (done()) return Promise.resolve();
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setInterval> | null = null;
@@ -528,6 +579,8 @@ const guest = (() => {
     });
   }
 
+  const ready = (stillCurrent: () => boolean, ms: number) => waitFor(stillCurrent, olsPlayerReady, ms);
+
   /**
    * Puts the player where the host is now. Paused while it gets there: the
    * seek is the wait, and starting the sound only once the player has the
@@ -535,22 +588,54 @@ const guest = (() => {
    */
   async function align(state: OlsPlaybackState, stillCurrent: () => boolean): Promise<void> {
     const play = state.isPlaying && !useListeningSession.getState().heldLocally;
+    const aim = () => projectOlsPosition(state, serverNow()) + (play ? leadMs : 0);
     quiet(8000);
     if (usePlayerStore.getState().isPlaying) olsSetPlaying(false);
-    olsSeek(projectOlsPosition(state, serverNow()) / 1000);
+    olsSeek(aim() / 1000);
     await ready(stillCurrent, 4000);
     if (!stillCurrent()) return;
     // The host moved on while this one loaded. A seek inside what is
     // buffered is quick, and worth it; one that asks the server again is not.
-    const target = projectOlsPosition(state, serverNow());
-    if (Math.abs(livePositionSec() * 1000 - target) > OLS_DRIFT_MS && olsSeekIsLocal()) {
-      olsSeek(target / 1000);
+    if (Math.abs(livePositionSec() * 1000 - aim()) > OLS_DRIFT_MS && olsSeekIsLocal()) {
+      olsSeek(aim() / 1000);
       await ready(stillCurrent, 1500);
       if (!stillCurrent()) return;
     }
-    if (play) olsSetPlaying(true);
     lastCorrectionAt = Date.now();
+    if (!play) {
+      quiet();
+      return;
+    }
+    olsSetPlaying(true);
+    // Measured once it has been sounding for a beat, when the position it
+    // reports is the one coming out. Against the newest state rather than
+    // this one, since a heartbeat may well arrive in that beat, and only while
+    // the room is still on this song: the measure is of this player, not of
+    // anything the host did meanwhile.
+    const s = session;
+    const songId = state.songIds[state.currentIndex];
+    const same = () =>
+      session === s &&
+      role() === 'guest' &&
+      !!latest &&
+      latest.isPlaying &&
+      latest.songIds[latest.currentIndex] === songId &&
+      currentSong(usePlayerStore.getState())?.id === songId;
+    const started = Date.now();
+    await waitFor(same, () => Date.now() - started >= 700 && olsPlayerReady(), 3000);
     quiet();
+    if (!same() || !latest || !usePlayerStore.getState().isPlaying) return;
+    const late = projectOlsPosition(latest, serverNow()) - livePositionSec() * 1000;
+    if (!Number.isFinite(late) || Math.abs(late) > 2000) return;
+    leadMs = Math.min(1500, Math.max(0, leadMs + late));
+    note(`listening · started ${Math.round(late)} ms late, aiming ${Math.round(leadMs)} ms ahead`);
+    // The first start of a room is the one that teaches it, and is otherwise
+    // left that far off for as long as it stays under the drift limit.
+    if (!calibrated && Math.abs(late) > 50 && olsSeekIsLocal()) {
+      calibrated = true;
+      await align(latest, same);
+    }
+    calibrated = true;
   }
 
   async function apply(force: boolean): Promise<void> {
@@ -655,6 +740,17 @@ const guest = (() => {
       await align(state, stillCurrent);
       return;
     }
+    // Starting again after a pause: the room started a moment ago, and this
+    // phone would start a moment later still. Aiming where the room will be
+    // once this player sounds, inside what it already holds, costs nothing.
+    if (
+      plan.play === true &&
+      olsSeekIsLocal() &&
+      Math.abs(projectOlsPosition(state, serverNow()) + leadMs - local.positionMs) > 50
+    ) {
+      await align(state, stillCurrent);
+      return;
+    }
     if (plan.play !== null) {
       quiet();
       olsSetPlaying(plan.play);
@@ -722,6 +818,10 @@ const guest = (() => {
       quiet();
       olsSetPlaying(control.action === 'play');
     },
+    /** The player is between sources for a moment: what it reports is not a person. */
+    settle(): void {
+      quiet();
+    },
     toggle(): void {
       const st = useListeningSession.getState();
       if (st.heldLocally) {
@@ -756,6 +856,8 @@ const guest = (() => {
       applied = null;
       lastCorrectionAt = 0;
       quietUntil = 0;
+      leadMs = 0;
+      calibrated = false;
       clearPending();
       songs.clear();
       lookups.clear();
@@ -780,8 +882,14 @@ export function initListeningSessions(): void {
     local: (playing) => guest.local(playing),
   });
   usePlayerStore.subscribe((st, prev) => {
-    if (role() !== 'host') return;
-    if (st.queue !== prev.queue || st.index !== prev.index || st.isPlaying !== prev.isPlaying) {
+    const r = role();
+    // A guest's own song change (reaching the next one by itself) comes with
+    // a few statuses from a player in between sources: not somebody pausing.
+    if (r === 'guest' && (st.index !== prev.index || st.queue !== prev.queue)) guest.settle();
+    if (r !== 'host') return;
+    if (st.isPlaying !== prev.isPlaying) host.transport(st.isPlaying);
+    else host.settleStop();
+    if (st.queue !== prev.queue || st.index !== prev.index) {
       host.soon();
       return;
     }
