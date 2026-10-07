@@ -21,6 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBottomSheetAnim } from '@/hooks/useBottomSheetAnim';
 import { useT } from '@/i18n';
 import { formatGroupedDeviceLabel, normalizeOutputDisplayName } from '@/lib/format';
+import { olsRole } from '@/lib/listeningSessionBridge';
 import {
   jukeboxConnect,
   jukeboxDisconnect,
@@ -206,14 +207,27 @@ export function OutputSheet({ visible, onClose }: { visible: boolean; onClose: (
     else if (jukeboxActive) await jukeboxDisconnect();
   }
 
+  /**
+   * A room keeps everyone on the same second of the same song, and a speaker
+   * across the network plays on its own clock: casting would take this phone
+   * out of step for everybody, or the host's room along with it.
+   */
+  function blockedByRoom(): boolean {
+    if (!olsRole()) return false;
+    toast(t('Stop listening together before casting.'));
+    return true;
+  }
+
   async function pickDevice(device: UpnpDevice) {
     if (device.id === upnpId) return;
+    if (blockedByRoom()) return;
     const ok = await upnpConnect(device);
     if (!ok) toast(t("Couldn't complete the action"));
   }
 
   async function pickJukebox() {
     if (jukeboxActive) return;
+    if (blockedByRoom()) return;
     // Silent handoff between remote outputs (does not resume on local in between).
     if (upnpId) await upnpDisconnect(true);
     const ok = await jukeboxConnect();

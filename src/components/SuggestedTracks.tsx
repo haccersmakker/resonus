@@ -19,7 +19,7 @@ import { Cover } from './Cover';
 import Icon from './Icon';
 import { useT } from '@/i18n';
 import { useAuthStore } from '@/store/auth';
-import { usePlayerStore } from '@/store/player';
+import { pauseHere, usePlayerStore } from '@/store/player';
 import { colors, fontSize, spacing, themed, tracking } from '@/theme';
 
 /** How many of the list's own songs are drawn from, and how many songs each
@@ -207,7 +207,7 @@ export function SuggestedTracks({
       const url = song.url || streamUrl(auth, song.id);
       if (!url) return;
       wasPlayingRef.current = usePlayerStore.getState().isPlaying;
-      if (wasPlayingRef.current) usePlayerStore.getState().toggle();
+      if (wasPlayingRef.current) pauseHere();
       // No precise timing: the preview only has to land near second 38, and on
       // iOS the exact seek scans the whole file first, which is the wait.
       const player = createAudioPlayer({ uri: url, preferPreciseTiming: false });
