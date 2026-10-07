@@ -52,6 +52,10 @@ import {
 import { coverArtUrl, getRandomSongs } from '@/api/data';
 import { prefetchLyrics } from '@/hooks/useLyrics';
 import { queryClient } from '@/lib/query';
+import {
+  handleListeningSessionControl,
+  listeningSessionBlocksQueueEdits,
+} from '@/lib/listeningSessionBridge';
 import { getItem, setItem } from '@/lib/storage';
 import { useAuthStore } from './auth';
 import { checkAutoUrlNow } from './autoUrl';
@@ -185,6 +189,17 @@ function abortSleepFade() {
 function fireSleepTimer() {
   if (sleepTimeout) clearTimeout(sleepTimeout);
   sleepTimeout = null;
+  // A guest's scheduled pause is still a playback control. Route it through
+  // the authoritative host just like the pause button; otherwise this device
+  // pauses alone and the next room heartbeat immediately starts it again.
+  if (handleListeningSessionControl({ action: 'pause' })) {
+    // Restore the locally faded volume while the host processes the request.
+    // This also avoids leaving the player silent if the socket vanished just
+    // before the scheduled control was sent.
+    abortSleepFade();
+    usePlayerStore.setState({ sleepEndsAt: null });
+    return;
+  }
   // Pause BEFORE restoring volume: the other way around, the fade just left
   // it at zero and `cutCrossfade` would bring it back to full a few
   // milliseconds before the pause — a sound burst right at falling asleep,
@@ -379,13 +394,22 @@ async function ensureTranscodeOffsetSupport(): Promise<boolean> {
  * stream has no random access. Shared by the user's seek and by every path that
  * restores a saved position, which used to restart those streams from zero too.
  */
-function seekActive(sec: number) {
+async function seekActive(sec: number): Promise<void> {
   const state = usePlayerStore.getState();
   const song = currentSong(state);
   pendingSeek = { sec, at: Date.now() };
   usePlayerStore.setState({ positionSec: sec });
   if (!song || !needsOffsetSeek(song)) {
-    activePlayer()?.seekTo(sec);
+    const player = activePlayer();
+    if (!player) return;
+    try {
+      // Media3 completes this promise after the native seek. Awaiting it is
+      // essential for Jam reconciliation, where clock heartbeats can otherwise
+      // issue overlapping seeks against the same progressive decoder.
+      await player.seekTo(sec);
+    } catch {
+      // A later status update or explicit reload reports/recovers the source.
+    }
     return;
   }
   // A stream generated on the fly has no random access: native seek
@@ -395,30 +419,34 @@ function seekActive(sec: number) {
   // loading, would still be unchecked and send us to native seek → restart).
   // The position and pendingSeek are already set so the slider doesn't bounce
   // while it decides.
-  void ensureTranscodeOffsetSupport().then((supported) => {
-    // If the track changed while resolving, don't touch the new player.
-    if (currentSong(usePlayerStore.getState()) !== song) return;
-    const p = activePlayer();
-    if (!p) return;
-    pendingSeek = { sec, at: Date.now() }; // refreshes the wait window
-    if (supported) {
-      streamOffsetSec = sec;
-      try {
-        replaceSource(p, sourceFor(song, sec));
-        p.volume = effectiveVolume(song);
-        if (usePlayerStore.getState().isPlaying) p.play();
-        // The new source came with an empty tail: re-queue what comes next.
-        // Nothing in the store changed here, so nobody else would.
-        scheduleNextSource();
-      } catch {
-        // ignore
-      }
-    } else {
-      // No offset support: native seek as best effort.
-      p.seekTo(sec);
+  const supported = await ensureTranscodeOffsetSupport();
+  // If the track changed while resolving, don't touch the new player.
+  if (currentSong(usePlayerStore.getState()) !== song) return;
+  const p = activePlayer();
+  if (!p) return;
+  pendingSeek = { sec, at: Date.now() }; // refreshes the wait window
+  if (supported) {
+    streamOffsetSec = sec;
+    try {
+      replaceSource(p, sourceFor(song, sec));
+      p.volume = effectiveVolume(song);
+      if (usePlayerStore.getState().isPlaying) p.play();
+      // The new source came with an empty tail: re-queue what comes next.
+      // Nothing in the store changed here, so nobody else would.
+      scheduleNextSource();
+    } catch {
+      // ignore
     }
-    usePlayerStore.setState({ positionSec: sec });
-  });
+  } else {
+    // No offset support: native seek as best effort. Serialize it with room
+    // reconciliation just like a normally seekable source.
+    try {
+      await p.seekTo(sec);
+    } catch {
+      // ignore
+    }
+  }
+  usePlayerStore.setState({ positionSec: sec });
 }
 
 /**
@@ -557,6 +585,28 @@ function remoteKind(): 'upnp' | 'jukebox' | null {
   return null;
 }
 
+/**
+ * Samples the playback engine instead of the UI store's 500 ms status cache.
+ * Jam timestamps are assigned when a state message reaches the coordinator;
+ * publishing a cached playhead makes every guest consistently trail the host.
+ * Remote outputs have no synchronous native playhead, so their event-fed store
+ * position remains the best value available.
+ */
+export function currentPlaybackPositionSec(): number {
+  const fallback = usePlayerStore.getState().positionSec;
+  if (remoteKind()) return fallback;
+  const player = activePlayer();
+  if (!player) return fallback;
+  try {
+    const currentTime = player.currentTime;
+    return Number.isFinite(currentTime)
+      ? Math.max(0, streamOffsetSec + currentTime)
+      : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function remotePlay() {
   if (isJukeboxActive()) void jukeboxPlay();
   else void upnpPlay();
@@ -607,17 +657,26 @@ function syncCastMedia(): void {
 }
 
 /** Loads the track at `index` into the remote output and syncs state. */
-async function remoteLoadIndex(index: number, autoplay: boolean, startSec = 0) {
+async function remoteLoadIndex(
+  index: number,
+  autoplay: boolean,
+  startSec = 0,
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> {
+  if (!isCurrent()) return false;
   const song = usePlayerStore.getState().queue[index];
-  if (!song) return;
+  if (!song) return false;
   scrobbledThisTrack = false;
   const ok = isJukeboxActive()
     ? await jukeboxLoad(song, autoplay, startSec)
     : await upnpLoad(song, autoplay, startSec);
+  // A newer track request may have completed while the renderer was loading.
+  // Do not let the older request overwrite its queue/index state afterwards.
+  if (!isCurrent()) return false;
   if (!ok) {
     useToast.getState().show(tg("This song can't be cast"));
     usePlayerStore.setState({ index, isPlaying: false, isBuffering: false });
-    return;
+    return false;
   }
   usePlayerStore.setState({
     index,
@@ -627,6 +686,7 @@ async function remoteLoadIndex(index: number, autoplay: boolean, startSec = 0) {
     isBuffering: autoplay,
   });
   onTrackChanged(song);
+  return true;
 }
 
 /**
@@ -642,8 +702,22 @@ function consumeQueuedOnIndexChange(next: number) {
   });
 }
 
+// Track changes can be requested again while `ensureAudioMode()` or a remote
+// renderer is still resolving the previous one. Only the newest request may
+// install a source or update the queue index; otherwise rapid next/previous
+// input can leave native playback on one song while the JS queue reports
+// another (and a listening room then faithfully publishes the wrong song).
+let trackLoadGeneration = 0;
+
 /** Loads the track at `index` and (optionally) plays it. */
-async function loadIndex(index: number, autoplay: boolean) {
+async function loadIndex(
+  index: number,
+  autoplay: boolean,
+  isCurrent: () => boolean = () => true,
+): Promise<boolean> {
+  const generation = ++trackLoadGeneration;
+  const stillCurrent = () => generation === trackLoadGeneration && isCurrent();
+  if (!stillCurrent()) return false;
   // Offline, a track that only exists as a server stream cannot be played:
   // we skip forward to the next downloaded one instead of getting stuck (covers
   // "previous", manual taps and queue restore). If none is playable, we stop.
@@ -662,7 +736,7 @@ async function loadIndex(index: number, autoplay: boolean) {
       if (target === -1) {
         usePlayerStore.setState({ isPlaying: false });
         useToast.getState().show(tg('Nothing here is downloaded'));
-        return;
+        return false;
       }
       index = target;
     }
@@ -673,11 +747,16 @@ async function loadIndex(index: number, autoplay: boolean) {
   sourceHasLength = null; // unknown until the new source is loaded
   scrobbledThisTrack = false;
   consumeQueuedOnIndexChange(index);
-  if (remoteKind()) return remoteLoadIndex(index, autoplay);
+  if (!stillCurrent()) return false;
+  if (remoteKind()) return remoteLoadIndex(index, autoplay, 0, stillCurrent);
   const { queue, repeat } = usePlayerStore.getState();
   const song = queue[index];
-  if (!song) return;
+  if (!song) return false;
   await ensureAudioMode();
+  // A listening room may have ended, or a newer track may have been selected,
+  // while audio mode was being acquired. Its late source load must not replace
+  // playback the user started afterward.
+  if (!stillCurrent()) return false;
   const p = ensurePlayer(activeIdx);
   // Equalizer re-attachment: when creating the player the audio session may not
   // be assigned yet. It's idempotent (native ignores duplicate sessions and id 0),
@@ -711,8 +790,10 @@ async function loadIndex(index: number, autoplay: boolean) {
     if (!song.url && !song.localUri && !downloadedUri(song)) {
       void ensureTranscodeOffsetSupport();
     }
+    return true;
   } catch {
-    useToast.getState().show(tg("Couldn't play the song"));
+    if (stillCurrent()) useToast.getState().show(tg("Couldn't play the song"));
+    return false;
   }
 }
 
@@ -1352,6 +1433,20 @@ function cutCrossfade() {
   if (pauseFadeTimer) {
     clearInterval(pauseFadeTimer);
     pauseFadeTimer = null;
+    // A seek or another intervention can arrive during the short pause fade.
+    // Cancelling its timer must still honor the state that the fade was
+    // converging to; otherwise native playback continues silently while the
+    // store and UI say it is paused.
+    const state = usePlayerStore.getState();
+    const player = activePlayer();
+    if (player) {
+      try {
+        if (!state.isPlaying) player.pause();
+        player.volume = effectiveVolume(currentSong(state));
+      } catch {
+        // ignore
+      }
+    }
   }
   // The sleep fade is also an in-progress ramp: if the user touches anything
   // (pause, seek, track change) it must be released, or it would keep lowering
@@ -1418,8 +1513,8 @@ function cancelHandoff() {
  *  position (classic behavior; handoff fallback and the path for paused case). */
 function hardReload(index: number, sec: number, autoplay: boolean) {
   void (async () => {
-    await loadIndex(index, autoplay);
-    if (sec > 0) seekActive(sec);
+    if (!(await loadIndex(index, autoplay))) return;
+    if (sec > 0) await seekActive(sec);
   })();
 }
 
@@ -1771,6 +1866,10 @@ function onStatus(status: AudioStatus) {
 function handleSleepAtSongEnd(): boolean {
   const { sleepAtSongEnd, repeat } = usePlayerStore.getState();
   if (!sleepAtSongEnd) return false;
+  if (handleListeningSessionControl({ action: 'pause' })) {
+    usePlayerStore.setState({ sleepAtSongEnd: false });
+    return true;
+  }
   usePlayerStore.setState({ sleepAtSongEnd: false, isPlaying: false });
   cutCrossfade();
   activePlayer()?.pause();
@@ -1953,8 +2052,8 @@ export function initRemoteIntegration() {
       const { queue, index } = usePlayerStore.getState();
       if (!queue[index]) return;
       void (async () => {
-        await loadIndex(index, false);
-        if (lastPositionSec > 0) seekActive(lastPositionSec);
+        if (!(await loadIndex(index, false))) return;
+        if (lastPositionSec > 0) await seekActive(lastPositionSec);
         usePlayerStore.setState({ positionSec: lastPositionSec, isPlaying: false });
       })();
     },
@@ -2074,6 +2173,17 @@ interface PlayerState {
     source?: string,
     sourceHref?: string,
   ) => Promise<void>;
+  /** Replaces the queue from an authoritative listening-session state. */
+  replaceQueueForListeningSession: (
+    songs: Song[],
+    index: number,
+    positionSec: number,
+    isPlaying: boolean,
+    isCurrent: () => boolean,
+  ) => Promise<void>;
+  /** Applies authoritative Jam play/pause immediately, without a UI fade. */
+  setPlayingForListeningSession: (isPlaying: boolean) => void;
+  seekForListeningSession: (sec: number) => Promise<void>;
   /**
    * Starts a radio from a song: plays it immediately and the queue keeps
    * filling itself with similar tracks, endlessly.
@@ -2171,6 +2281,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   streamInfo: null,
 
   playQueue: async (songs, startIndex = 0, source, sourceHref) => {
+    if (listeningSessionBlocksQueueEdits()) return;
     if (songs.length === 0) return;
     // Discard offline-unavailable tracks (not downloaded): they can't be
     // played. The initial index is remapped to the tapped song within the
@@ -2210,7 +2321,78 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     await loadIndex(startIndex, true);
   },
 
+  replaceQueueForListeningSession: async (songs, index, positionSec, isPlaying, isCurrent) => {
+    if (songs.length === 0 || !isCurrent()) return;
+    const safeIndex = Math.max(0, Math.min(index, songs.length - 1));
+    attachAppState();
+    autoplayFetchedFor = null;
+    artistFill = null;
+    resetWarmed();
+    set({
+      queue: songs,
+      index: safeIndex,
+      queuedCount: 0,
+      positionSec: 0,
+      durationSec: songs[safeIndex]?.duration ?? 0,
+      isPlaying: false,
+      shuffle: false,
+      originalQueue: null,
+      source: 'Jam',
+      sourceHref: null,
+      radioMode: false,
+      radioSeed: null,
+    });
+    // Load paused, seek, then start. Starting first can expose a short burst
+    // from 0:00 while a guest joins in the middle of a song.
+    if (!(await loadIndex(safeIndex, false, isCurrent))) return;
+    if (!isCurrent()) return;
+    const target = Math.max(0, positionSec);
+    if (target > 0) {
+      if (remoteKind()) remoteSeek(target);
+      else await seekActive(target);
+    }
+    if (!isCurrent()) return;
+    get().setPlayingForListeningSession(isPlaying);
+    set({ positionSec: target });
+  },
+
+  setPlayingForListeningSession: (isPlaying) => {
+    // Authoritative remote state must not depend on the short in-app fade:
+    // background timers may freeze, and a following seek intentionally cuts
+    // fades. Apply the transport state atomically at the native boundary.
+    cutCrossfade();
+    if (remoteKind()) {
+      if (isPlaying) remotePlay();
+      else remotePause();
+      set({ isPlaying, isBuffering: isPlaying ? get().isBuffering : false });
+      return;
+    }
+    const player = activePlayer();
+    if (player) {
+      try {
+        player.volume = effectiveVolume(currentSong(get()));
+        if (isPlaying) player.play();
+        else player.pause();
+      } catch {
+        // The native status listener reconciles a source being replaced.
+      }
+    }
+    set({ isPlaying, isBuffering: isPlaying ? get().isBuffering : false });
+  },
+
+  seekForListeningSession: async (sec) => {
+    cutCrossfade();
+    if (remoteKind()) {
+      remoteSeek(sec);
+      set({ positionSec: sec });
+      return;
+    }
+    await seekActive(sec);
+    set({ positionSec: sec });
+  },
+
   startRadio: async (seed, source) => {
+    if (listeningSessionBlocksQueueEdits()) return false;
     const cur = currentSong(get());
     if (cur && cur.id === seed.id) {
       // Mix seeded by what's already playing: only the queue AROUND it changes,
@@ -2250,6 +2432,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   stopRadio: () => {
+    if (listeningSessionBlocksQueueEdits()) return;
     set({ radioMode: false, radioSeed: null });
     saveQueueLocal();
   },
@@ -2257,6 +2440,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   // Spotify-style: manually added songs play right after the current one (and
   // after what was already added before), not at the end of the playing list.
   addToQueue: (song) => {
+    if (listeningSessionBlocksQueueEdits()) return;
     const { queue, index, queuedCount } = get();
     if (queue.length === 0) {
       void get().playQueue([song], 0);
@@ -2269,6 +2453,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playNext: (song) => {
+    if (listeningSessionBlocksQueueEdits()) return;
     const { queue, index, queuedCount } = get();
     if (queue.length === 0) {
       void get().playQueue([song], 0);
@@ -2282,6 +2467,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   toggle: () => {
+    if (
+      handleListeningSessionControl({ action: get().isPlaying ? 'pause' : 'play' })
+    ) {
+      return;
+    }
     if (remoteKind()) {
       if (get().isPlaying) {
         remotePause();
@@ -2334,6 +2524,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   next: () => {
+    if (handleListeningSessionControl({ action: 'next' })) return;
     const ni = nextIndex(true);
     if (ni != null) {
       pushHistory();
@@ -2342,6 +2533,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   previous: () => {
+    if (handleListeningSessionControl({ action: 'previous' })) return;
     const { index, positionSec } = get();
     // Like Spotify: past a few seconds, "previous" restarts the song. In
     // "always" mode (YouTube-style) it always goes to the previous track, no restart.
@@ -2371,13 +2563,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   seekTo: (sec) => {
+    if (
+      handleListeningSessionControl({
+        action: 'seek',
+        positionMs: Math.max(0, Math.round(sec * 1000)),
+      })
+    ) {
+      return;
+    }
     cutCrossfade();
     if (remoteKind()) {
       remoteSeek(sec);
       set({ positionSec: sec });
       return;
     }
-    seekActive(sec);
+    void seekActive(sec);
   },
 
   setVolume: (v) => {
@@ -2393,6 +2593,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   jumpTo: (index) => {
+    if (handleListeningSessionControl({ action: 'jump', index })) return;
     const { queue } = get();
     if (index < 0 || index >= queue.length) return;
     // Forward jump like any other: "previous" must be able to return.
@@ -2401,6 +2602,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   removeAt: async (index) => {
+    if (listeningSessionBlocksQueueEdits()) return undefined;
     const { queue, index: cur, queuedCount } = get();
     if (index < 0 || index >= queue.length) return undefined;
     const removed = queue[index];
@@ -2415,7 +2617,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       // the first in the "queued" block, it now plays and is consumed.
       const newIndex = Math.min(cur, next.length - 1);
       set({ queue: next, index: newIndex, queuedCount: Math.max(0, queuedCount - 1) });
-      await loadIndex(newIndex, get().isPlaying);
+      if (!(await loadIndex(newIndex, get().isPlaying))) return undefined;
       scheduleSync();
       return undefined;
     }
@@ -2443,6 +2645,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   clearQueue: () => {
+    if (listeningSessionBlocksQueueEdits()) return undefined;
     const { queue, index, queuedCount, originalQueue, radioMode, radioSeed } = get();
     const current = queue[index];
     if (!current) return undefined;
@@ -2468,6 +2671,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   stopAndClear: async () => {
+    if (listeningSessionBlocksQueueEdits()) return undefined;
     const {
       queue,
       index,
@@ -2505,8 +2709,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           radioSeed,
         });
         // Like restoring the saved queue: track loaded, paused.
-        await loadIndex(index, false);
-        if (positionSec > 0) seekActive(positionSec);
+        if (!(await loadIndex(index, false))) return;
+        if (positionSec > 0) await seekActive(positionSec);
         usePlayerStore.setState({ positionSec, isPlaying: false });
         scheduleSync();
       })();
@@ -2533,6 +2737,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   moveTrack: async (from, to) => {
+    if (listeningSessionBlocksQueueEdits()) return;
     const { queue, index, queuedCount } = get();
     if (
       from === to ||
@@ -2570,6 +2775,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   toggleShuffle: () => {
+    if (listeningSessionBlocksQueueEdits()) return;
     const { shuffle, queue, index, originalQueue } = get();
     const current = queue[index];
 
@@ -2599,6 +2805,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   cycleRepeat: () => {
+    if (listeningSessionBlocksQueueEdits()) return;
     // First tap: repeat current song ('one'); second: whole queue ('all');
     // third: off. Like Feishin.
     const order: RepeatMode[] = ['off', 'one', 'all'];
@@ -2664,8 +2871,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioSeed: null,
     });
     // Load the track (without playing) and leave the position ready.
-    await loadIndex(index, false);
-    if (positionSec > 0) seekActive(positionSec);
+    if (!(await loadIndex(index, false))) return;
+    if (positionSec > 0) await seekActive(positionSec);
     usePlayerStore.setState({ positionSec, isPlaying: false });
   },
 
@@ -2707,8 +2914,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioMode: saved.radioMode === true,
       radioSeed: saved.radioSeed ?? null,
     });
-    await loadIndex(index, false);
-    if (positionSec > 0) seekActive(positionSec);
+    if (!(await loadIndex(index, false))) return true;
+    if (positionSec > 0) await seekActive(positionSec);
     usePlayerStore.setState({ positionSec, isPlaying: false });
     return true;
   },
@@ -2736,6 +2943,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   reset: async () => {
+    // A source request awaiting audio-mode setup must not resurrect playback
+    // after logout, profile change, or an explicit queue reset.
+    trackLoadGeneration++;
     get().cancelSleepTimer();
     autoplayFetchedFor = null;
     artistFill = null;

@@ -58,9 +58,24 @@ export default function SettingsScreen() {
   // In offline, Playback also appears: the screen itself hides what's server-
   // side (bitrates, autoplay) and leaves what applies locally (crossfade,
   // online lyrics). "Library" becomes the local music.
-  const sections: { key: string; title: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  const sections: {
+    key: string;
+    title: string;
+    icon: keyof typeof Ionicons.glyphMap;
+    href?: string;
+  }[] = [
     { key: 'playback', title: 'Quality & playback', icon: 'musical-notes-outline' as const },
     { key: 'player', title: 'Player', icon: 'play-circle-outline' as const },
+    ...(!offline
+      ? [
+          {
+            key: 'jam',
+            title: 'Listening together',
+            icon: 'people-outline' as const,
+            href: '/jam',
+          },
+        ]
+      : []),
     // Downloads: in server-offline it reduces to used space and delete (no
     // server means no downloading, but freeing space is still useful). In the
     // local profile (no account) there are NO server downloads, so it's skipped.
@@ -111,7 +126,7 @@ export default function SettingsScreen() {
           <Pressable
             key={s.key}
             style={({ pressed }) => [styles.sectionRow, pressed && { opacity: 0.6 }]}
-            onPress={() => router.push(`/settings/${s.key}`)}
+            onPress={() => router.push(s.href ?? `/settings/${s.key}`)}
           >
             <Ionicons name={s.icon} size={24} color={colors.text} />
             <Text style={styles.sectionRowTitle}>{t(s.title)}</Text>

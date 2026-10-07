@@ -26,6 +26,7 @@ import { EmptyState } from '@/components/EmptyState';
 import { SheetModal } from '@/components/SheetModal';
 import { formatTotalDuration } from '@/lib/format';
 import { SOURCE_FAVORITES, SOURCE_HISTORY, usePlayerStore } from '@/store/player';
+import { useListeningSession } from '@/store/listeningSession';
 import { usePlaylistPicker } from '@/store/playlistPicker';
 import { useSettings } from '@/store/settings';
 import { useToast } from '@/store/toast';
@@ -101,7 +102,15 @@ function PreviousRow({ item, absIndex }: { item: Song; absIndex: number }) {
 }
 
 /** Row for upcoming tracks: can be tapped (skip), dragged and removed. */
-function UpcomingRow({ item, absIndex }: { item: Song; absIndex: number }) {
+function UpcomingRow({
+  item,
+  absIndex,
+  editable,
+}: {
+  item: Song;
+  absIndex: number;
+  editable: boolean;
+}) {
   const jumpTo = usePlayerStore((s) => s.jumpTo);
   const removeAt = usePlayerStore((s) => s.removeAt);
   const showListArtwork = useSettings((s) => s.showListArtwork);
@@ -116,7 +125,18 @@ function UpcomingRow({ item, absIndex }: { item: Song; absIndex: number }) {
 
   return (
     <View style={styles.row}>
-      <Pressable style={styles.main} onPress={() => jumpTo(absIndex)} onLongPress={() => { haptic('medium'); drag(); }}>
+      <Pressable
+        style={styles.main}
+        onPress={() => jumpTo(absIndex)}
+        onLongPress={
+          editable
+            ? () => {
+                haptic('medium');
+                drag();
+              }
+            : undefined
+        }
+      >
         {showListArtwork ? (
           <View style={styles.artwork}>
             <Cover uri={coverArtUrl(item.coverArt ?? item.albumId, 100)} size={44} />
@@ -134,14 +154,22 @@ function UpcomingRow({ item, absIndex }: { item: Song; absIndex: number }) {
         </View>
       </Pressable>
 
-      <View style={styles.actions}>
-        <Pressable hitSlop={6} onPress={() => void remove()}>
-          <Ionicons name="close" size={22} color={colors.textSecondary} />
-        </Pressable>
-        <Pressable hitSlop={6} onPressIn={() => { haptic('medium'); drag(); }}>
-          <Ionicons name="reorder-two" size={24} color={colors.textSecondary} />
-        </Pressable>
-      </View>
+      {editable ? (
+        <View style={styles.actions}>
+          <Pressable hitSlop={6} onPress={() => void remove()}>
+            <Ionicons name="close" size={22} color={colors.textSecondary} />
+          </Pressable>
+          <Pressable
+            hitSlop={6}
+            onPressIn={() => {
+              haptic('medium');
+              drag();
+            }}
+          >
+            <Ionicons name="reorder-two" size={24} color={colors.textSecondary} />
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -159,6 +187,10 @@ export default function QueueScreen() {
   const clearQueue = usePlayerStore((s) => s.clearQueue);
   const radioMode = usePlayerStore((s) => s.radioMode);
   const stopRadio = usePlayerStore((s) => s.stopRadio);
+  const jamRole = useListeningSession((s) =>
+    s.status === 'connected' || s.status === 'leaving' ? s.room?.role ?? null : null,
+  );
+  const queueEditable = jamRole !== 'guest';
   // The store's accent, not `colors.accent`: without subscription the icon
   // would keep the previous one while the screen stays mounted.
   const accent = useSettings((s) => s.accentColor);
@@ -251,7 +283,7 @@ export default function QueueScreen() {
               <Ionicons name="sparkles" size={22} color={accent} />
             </Pressable>
           ) : null}
-          {upcoming.length > 0 ? (
+          {upcoming.length > 0 && queueEditable ? (
             <Pressable
               style={styles.headerAction}
               hitSlop={10}
@@ -306,7 +338,7 @@ export default function QueueScreen() {
             return (
               <View style={styles.cell}>
                 {header ? <SectionHeader title={header} gap /> : null}
-                <UpcomingRow item={item} absIndex={index + 1 + rel} />
+                <UpcomingRow item={item} absIndex={index + 1 + rel} editable={queueEditable} />
               </View>
             );
           }}
@@ -341,17 +373,29 @@ export default function QueueScreen() {
 
       <SheetModal openRef={menuRef}>
         {(close) => (
-          <Pressable
-            style={({ pressed }) => [styles.action, pressed && { opacity: 0.6 }]}
-            onPress={() => {
-              close();
-              const q = usePlayerStore.getState().queue;
-              if (q.length > 0) usePlaylistPicker.getState().open(q);
-            }}
-          >
-            <Ionicons name="add" size={24} color={colors.text} />
-            <Text style={styles.actionText}>{t('Add to a playlist')}</Text>
-          </Pressable>
+          <>
+            <Pressable
+              style={({ pressed }) => [styles.action, pressed && { opacity: 0.6 }]}
+              onPress={() => {
+                close();
+                router.push('/jam');
+              }}
+            >
+              <Ionicons name="people-outline" size={24} color={colors.text} />
+              <Text style={styles.actionText}>{t('Listening together')}</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.action, pressed && { opacity: 0.6 }]}
+              onPress={() => {
+                close();
+                const q = usePlayerStore.getState().queue;
+                if (q.length > 0) usePlaylistPicker.getState().open(q);
+              }}
+            >
+              <Ionicons name="add" size={24} color={colors.text} />
+              <Text style={styles.actionText}>{t('Add to a playlist')}</Text>
+            </Pressable>
+          </>
         )}
       </SheetModal>
     </SafeAreaView>

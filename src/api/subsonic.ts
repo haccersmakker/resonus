@@ -560,6 +560,12 @@ export async function getAlbum(
   return { album, songs: song ?? [] };
 }
 
+/** Resolves one server-local song id (standard Subsonic endpoint). */
+export async function getSong(auth: SubsonicAuth, id: string): Promise<Song> {
+  const res = await request<{ song: Song }>(auth, 'getSong.view', { id });
+  return res.song;
+}
+
 export async function getPlaylists(auth: SubsonicAuth): Promise<Playlist[]> {
   const res = await request<{ playlists?: { playlist?: Playlist[] } }>(
     auth,
@@ -1270,7 +1276,7 @@ export async function getOpenSubsonicExtensions(auth: SubsonicAuth): Promise<str
     'getOpenSubsonicExtensions.view',
     {},
   );
-  return (res.openSubsonicExtensions ?? []).map((e) => e.name);
+  return (res.openSubsonicExtensions ?? []).map((extension) => extension.name);
 }
 
 // ── Jukebox ──────────────────────────────────────────────────────────────────

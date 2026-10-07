@@ -31,6 +31,7 @@ import { useDownloads } from '@/store/downloads';
 import { useEqualizer } from '@/store/equalizer';
 import { useLastPlayed } from '@/store/lastPlayed';
 import { useLibraries } from '@/store/libraries';
+import { initListeningSessionIntegration } from '@/store/listeningSession';
 import { useLibraryMirror } from '@/store/libraryMirror';
 import { useOfflineQueue } from '@/store/offlineQueue';
 import { checkAutoUrlNow, initAutoUrl } from '@/store/autoUrl';
@@ -133,6 +134,7 @@ export default function RootLayout() {
         if (current) void useLibraries.getState().load(current);
       });
     initRemoteIntegration();
+    initListeningSessionIntegration();
   }, [hydrate, activeProfile]);
 
   // On entering a profile (server or local), resumes the saved queue
@@ -192,6 +194,7 @@ export default function RootLayout() {
                 <Stack.Screen name="genres" />
                 <Stack.Screen name="genre/[name]" />
                 <Stack.Screen name="radio" />
+                <Stack.Screen name="jam" />
                 <Stack.Screen name="favorites" />
                 <Stack.Screen name="favorites-add" />
                 <Stack.Screen name="history" />

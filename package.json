@@ -56,7 +56,8 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "i18n:status": "node scripts/i18n-status.mjs"
+    "i18n:status": "node scripts/i18n-status.mjs",
+    "test:listening-sessions": "node --test src/lib/listeningSessions.test.mts"
   },
   "private": true,
   "expo": {

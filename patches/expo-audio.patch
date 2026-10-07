@@ -143,7 +143,7 @@ diff --git a/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/android/s
 index f7c43641fc12b627c70759fb49bbe65e746c4c1d..640ecc619014e50c8c1bd78e388ef77d6ee85c54 100644
 --- a/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-@@ -7,7 +7,9 @@ import android.media.audiofx.Visualizer
+@@ -7,7 +7,10 @@ import android.media.audiofx.Visualizer
  import android.util.Log
  import androidx.core.content.ContextCompat
  import androidx.media3.common.AudioAttributes
@@ -151,9 +151,10 @@ index f7c43641fc12b627c70759fb49bbe65e746c4c1d..640ecc619014e50c8c1bd78e388ef77d
  import androidx.media3.common.MediaItem
 +import androidx.media3.common.MediaMetadata
  import androidx.media3.common.PlaybackParameters
++import androidx.media3.common.PlaybackException
  import androidx.media3.common.Player
  import androidx.media3.common.util.UnstableApi
-@@ -37,6 +39,10 @@ import java.util.UUID
+@@ -37,6 +39,12 @@ import java.util.UUID
  
  private const val PLAYBACK_STATUS_UPDATE = "playbackStatusUpdate"
  private const val AUDIO_SAMPLE_UPDATE = "audioSampleUpdate"
@@ -162,9 +163,11 @@ index f7c43641fc12b627c70759fb49bbe65e746c4c1d..640ecc619014e50c8c1bd78e388ef77d
 +private const val TRACK_TRANSITION = "trackTransition"
 +private const val STREAM_METADATA = "streamMetadata"
  private const val SEEK_JUMP_INTERVAL_MS: Long = 10_000
++private const val MAX_CONSECUTIVE_RECOVERY_ATTEMPTS = 3
++private const val RECOVERY_RETRY_DELAY_MS = 500L
  
  @UnstableApi
-@@ -49,7 +55,30 @@ class AudioPlayer(
+@@ -49,7 +57,30 @@ class AudioPlayer(
  ) : SharedRef<ExoPlayer>(
    ExoPlayer.Builder(context)
      .setLooper(context.mainLooper)
@@ -196,7 +199,21 @@ index f7c43641fc12b627c70759fb49bbe65e746c4c1d..640ecc619014e50c8c1bd78e388ef77d
      .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
      .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
      .apply {
-@@ -114,6 +143,42 @@ class AudioPlayer(
+@@ -97,3 +129,6 @@ class AudioPlayer(
+   private var updateJob: Job? = null
+   private var previousPlaybackState = Player.STATE_IDLE
++  private var recoveryAttempts = 0
++  private var recoveryScheduled = false
++  private var sourceGeneration = 0
+   private var intendedPlayingState = false
+@@ -110,10 +145,49 @@ class AudioPlayer(
+   fun setMediaSource(source: MediaSource) {
+     previousPlaybackState = Player.STATE_IDLE
++    recoveryAttempts = 0
++    recoveryScheduled = false
++    sourceGeneration += 1
+     ref.setMediaSource(source)
+     ref.prepare()
      startUpdating()
    }
  
@@ -239,10 +256,52 @@ index f7c43641fc12b627c70759fb49bbe65e746c4c1d..640ecc619014e50c8c1bd78e388ef77d
    fun setActiveForLockScreen(active: Boolean, metadata: Metadata? = null, options: AudioLockScreenOptions? = null) {
      if (active) {
        this.metadata = metadata
-@@ -221,7 +286,34 @@ class AudioPlayer(
+@@ -205,4 +279,11 @@ class AudioPlayer(
+       override fun onPlaybackStateChanged(playbackState: Int) {
++        // A successful prepare ends the current failure streak. Keep the retry
++        // budget bounded for consecutive failures, while still allowing a
++        // later independent decoder error on the same source to recover.
++        if (playbackState == Player.STATE_READY && ref.playerError == null) {
++          recoveryAttempts = 0
++          recoveryScheduled = false
++        }
+         val justFinished = playbackState == Player.STATE_ENDED &&
+           previousPlaybackState != Player.STATE_ENDED
+         previousPlaybackState = playbackState
+@@ -221,7 +302,64 @@ class AudioPlayer(
          sendPlayerUpdate(updateMap)
        }
  
++      override fun onPlayerError(error: PlaybackException) {
++        // Media3 moves to STATE_IDLE after this callback. A progressive FLAC
++        // decoder can occasionally report a malformed frame after several
++        // seeks even though the byte-identical source is valid. Media3's
++        // documented retry is prepare(); post one attempt per consecutive
++        // failure streak so it runs after the transition to IDLE, retains the
++        // current item/position and does not turn a temporary decoder failure
++        // into a dead room participant.
++        if (
++          recoveryAttempts >= MAX_CONSECUTIVE_RECOVERY_ATTEMPTS ||
++          recoveryScheduled ||
++          ref.mediaItemCount == 0
++        ) return
++        recoveryAttempts += 1
++        recoveryScheduled = true
++        val recoveryGeneration = sourceGeneration
++        Log.w("ExpoAudio", "Retrying playback after Media3 error", error)
++        playerScope.launch {
++          delay(RECOVERY_RETRY_DELAY_MS * recoveryAttempts)
++          if (sourceGeneration != recoveryGeneration) return@launch
++          recoveryScheduled = false
++          if (
++            ref.playerError != null &&
++            ref.availableCommands.contains(Player.COMMAND_PREPARE)
++          ) {
++            ref.prepare()
++          }
++        }
++      }
++
 +      /**
 +       * What the source says it is playing. On an internet radio this is the
 +       * ICY metadata the stream sends at the start of every track (ExoPlayer

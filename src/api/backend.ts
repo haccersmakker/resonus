@@ -136,6 +136,9 @@ export const getSongsByGenre = (
 
 export const getAlbum = (auth: SubsonicAuth, id: string) => api(auth).getAlbum(auth, id);
 
+/** Jam v1 is OpenSubsonic-only; Jellyfin does not expose server-local rooms. */
+export const getSong = (auth: SubsonicAuth, id: string) => Subsonic.getSong(auth, id);
+
 export const getArtists = (auth: SubsonicAuth, musicFolderId?: string) =>
   api(auth).getArtists(auth, musicFolderId);
 
