@@ -727,7 +727,21 @@
     "Update": "The button that installs a newer version of Resonus. A verb, not a noun: `Update it`, not `An update`",
     "Check for updates": "Ask GitHub now whether a newer Resonus is out",
     "You're on the latest version": "Answer when that check finds nothing newer",
-    "Installing updates needs permission": "Shown when the user came back from Android's «install unknown apps» screen without granting it"
+    "Installing updates needs permission": "Shown when the user came back from Android's «install unknown apps» screen without granting it",
+
+    // ── Listening together ───────────────────────────────────────────────────
+    // A "room" is a group of people listening to the same music at the same
+    // time, each on their own phone. One of them hosts it: the host's queue is
+    // everybody's queue. The others are guests.
+    "Listening together": "The feature's name: several people hearing the same songs at the same moment, each on their own phone. Also the name of the screen",
+    "Host": "The person in a listening room whose queue everybody hears. A person, not a network host or a server",
+    "Guest": "Anybody in a listening room who is not the host",
+    "Join": "Button: enter a listening room. A verb",
+    "You": "Marks your own name in the list of people in a room",
+    "Listener": "The name shown for somebody in a room who did not give one",
+    "End the room": "The host closing the room for everybody in it",
+    "Listening server": "The separate server that keeps everybody in a room in step. Not the music server: it never plays or stores music",
+    "Room code": "The few letters and digits that let somebody join a room"
   },
 
   // ── Custom font ────────────────────────────────────────────────────────

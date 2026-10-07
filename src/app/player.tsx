@@ -67,6 +67,7 @@ import {
   playingQueued,
   SOURCE_FAVORITES,
   SOURCE_HISTORY,
+  SOURCE_LISTENING,
   useLiveInfo,
   usePlayerStore,
 } from '@/store/player';
@@ -882,7 +883,9 @@ export default function PlayerScreen() {
             ? t('Favorites')
             : source === SOURCE_HISTORY
               ? t('History')
-              : source;
+              : source === SOURCE_LISTENING
+                ? t('Listening together')
+                : source;
   // The header leads wherever it says it is playing from, so while it names the
   // queue it opens the queue. A mix is the one thing with nowhere to go: the
   // songs playing are not in that album, so it stops being a link until the
