@@ -12,6 +12,7 @@ import { useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Share, Text, TextInput, View } from 'react-native';
 
+import { Dialog } from '@/components/Dialog';
 import { SettingsGroup, SettingsPage, settingsStyles } from '@/components/SettingsUI';
 import { useT } from '@/i18n';
 import {
@@ -50,6 +51,7 @@ export default function ListenTogetherScreen() {
   const [coordinator, setCoordinator] = useState(savedCoordinator);
   const [name, setName] = useState(savedName);
   const [code, setCode] = useState('');
+  const [confirmEnd, setConfirmEnd] = useState(false);
   // A second tap lands before the status it set has re-rendered the button.
   const busyRef = useRef(false);
 
@@ -168,7 +170,9 @@ export default function ListenTogetherScreen() {
               accent={accent}
               busy={status === 'leaving'}
               disabled={status === 'leaving'}
-              onPress={leave}
+              // Ending is for everybody, so it is asked once more; leaving is
+              // only this phone's, and is not.
+              onPress={room.role === 'host' ? () => setConfirmEnd(true) : leave}
             />
             <Text style={settingsStyles.sectionTitle}>
               {t('In the room ({n})', { n: room.participants.length })}
@@ -325,6 +329,18 @@ export default function ListenTogetherScreen() {
           </Text>
         ) : null}
       </ScrollView>
+      <Dialog
+        visible={confirmEnd}
+        title={t('End the room')}
+        message={t('The music stops being shared, and everybody in the room leaves it.')}
+        confirmLabel={t('End the room')}
+        destructive
+        onCancel={() => setConfirmEnd(false)}
+        onConfirm={() => {
+          setConfirmEnd(false);
+          leave();
+        }}
+      />
     </SettingsPage>
   );
 }

@@ -840,5 +840,6 @@
   "The host ended the room.": "The host ended the room.",
   "Couldn’t load the room’s songs from your server. Trying again…": "Couldn’t load the room’s songs from your server. Trying again…",
   "This song isn’t available on your account.": "This song isn’t available on your account.",
-  "Stop listening together before casting.": "Stop listening together before casting."
+  "Stop listening together before casting.": "Stop listening together before casting.",
+  "The music stops being shared, and everybody in the room leaves it.": "The music stops being shared, and everybody in the room leaves it."
 }

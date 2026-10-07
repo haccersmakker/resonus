@@ -426,6 +426,12 @@ const guest = (() => {
   /** Song details, by id, for this room. */
   const songs = new Map<string, Song>();
   const lookups = new Map<string, Promise<Song | null>>();
+  /**
+   * When a song that could not be had is worth asking for again. Without it a
+   * room with songs this account lacks asked for every one of them on every
+   * heartbeat, for as long as the room lasted.
+   */
+  const missing = new Map<string, number>();
   let lookupFailed = false;
 
   const quiet = (ms = 2000) => {
@@ -446,6 +452,7 @@ const guest = (() => {
     if (known) return Promise.resolve(known);
     const inFlight = lookups.get(id);
     if (inFlight) return inFlight;
+    if ((missing.get(id) ?? 0) > Date.now()) return Promise.resolve(null);
     // The profile's current address: the one the room started on may be the
     // home network the phone has since left.
     const current = useAuthStore.getState().auth;
@@ -456,12 +463,16 @@ const guest = (() => {
         // the server's answer, and it is about to be played.
         if (song && song.id === id && isOlsServerSong(song)) {
           songs.set(id, song);
+          missing.delete(id);
           return song;
         }
+        missing.set(id, Date.now() + 30_000);
         return null;
       })
       .catch(() => {
+        // The server not answering is likelier to pass than a song it lacks.
         lookupFailed = true;
+        missing.set(id, Date.now() + 5_000);
         return null;
       })
       .finally(() => lookups.delete(id));
@@ -569,6 +580,14 @@ const guest = (() => {
     }
     if (plan.queue === 'adopt' || plan.queue === 'load') {
       lookupFailed = false;
+      // Songs this phone already has are the same server's songs: no need to
+      // ask for them again. Without the marks they carried in the old queue,
+      // which would put them under headers of a queue that is gone.
+      for (const x of player.queue) {
+        if (!x.unavailable && isOlsServerSong(x) && !songs.has(x.id)) {
+          songs.set(x.id, { ...x, queued: undefined, fromMix: undefined });
+        }
+      }
       // What is about to play first, the rest after: a five hundred song queue
       // is a minute of lookups, and the room should be heard in a second.
       const first = state.songIds.slice(state.currentIndex, state.currentIndex + 2);
@@ -582,11 +601,13 @@ const guest = (() => {
           quiet();
           olsSetPlaying(false);
         }
-        useListeningSession.setState({
-          error: lookupFailed
-            ? 'Couldn’t load the room’s songs from your server. Trying again…'
-            : 'This song isn’t available on your account.',
-        });
+        const error = lookupFailed
+          ? 'Couldn’t load the room’s songs from your server. Trying again…'
+          : 'This song isn’t available on your account.';
+        if (useListeningSession.getState().error !== error) {
+          useListeningSession.setState({ error });
+          useToast.getState().show(tg(error));
+        }
         return;
       }
       const list = queueOf(state.songIds);
@@ -600,8 +621,9 @@ const guest = (() => {
       if (useListeningSession.getState().error) useListeningSession.setState({ error: null });
       // The rest in the background; the queue is swapped again when it is in.
       if (list.some((x) => x.unavailable)) {
+        const had = songs.size;
         void lookupAll(s, state.songIds).then(() => {
-          if (session === s) void schedule(false);
+          if (session === s && songs.size > had) void schedule(false);
         });
       }
       if (plan.queue === 'load') return;
@@ -723,6 +745,7 @@ const guest = (() => {
       clearPending();
       songs.clear();
       lookups.clear();
+      missing.clear();
       forceNext = false;
     },
   };

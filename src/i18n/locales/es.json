@@ -842,5 +842,6 @@
   "The host ended the room.": "El anfitrión cerró la sala.",
   "Couldn’t load the room’s songs from your server. Trying again…": "No se pudieron cargar las canciones de la sala desde tu servidor. Reintentando…",
   "This song isn’t available on your account.": "Esta canción no está disponible en tu cuenta.",
-  "Stop listening together before casting.": "Deja de escuchar juntos antes de transmitir."
+  "Stop listening together before casting.": "Deja de escuchar juntos antes de transmitir.",
+  "The music stops being shared, and everybody in the room leaves it.": "La música deja de compartirse y todos salen de la sala."
 }

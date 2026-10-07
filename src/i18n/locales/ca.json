@@ -842,5 +842,6 @@
   "The host ended the room.": "L'amfitrió ha tancat la sala.",
   "Couldn’t load the room’s songs from your server. Trying again…": "No s'han pogut carregar les cançons de la sala des del teu servidor. Tornant-ho a provar…",
   "This song isn’t available on your account.": "Aquesta cançó no està disponible al teu compte.",
-  "Stop listening together before casting.": "Deixa d'escoltar junts abans de transmetre."
+  "Stop listening together before casting.": "Deixa d'escoltar junts abans de transmetre.",
+  "The music stops being shared, and everybody in the room leaves it.": "La música deixa de compartir-se i tothom surt de la sala."
 }
