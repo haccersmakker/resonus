@@ -362,12 +362,18 @@ const host = (() => {
         publish();
       });
     },
+    /**
+     * The heartbeat. Not while the host's own stream is stalled: its position
+     * standing still would pull every guest back every few seconds. They play
+     * on, and the first beat after the stall puts them back with it, once.
+     */
     publishIfDue(): void {
+      if (last && usePlayerStore.getState().isBuffering) return;
       if (!last || Date.now() - last.at >= OLS_HEARTBEAT_MS - 200) publish();
     },
     /** The player moved on its own: a seek from outside the app, a song repeating. */
     checkJump(): void {
-      if (!last) return;
+      if (!last || usePlayerStore.getState().isBuffering) return;
       const now = Date.now();
       if (olsPositionJumped(last, livePositionSec() * 1000, now)) this.soon();
     },
@@ -572,6 +578,14 @@ const guest = (() => {
       awaitingTransport,
     });
     applied = state;
+    // What a guest decided, and how far off it was when it seeked: the
+    // Diagnostics report is the only record of a room nobody was watching.
+    if (plan.queue !== 'keep' || plan.seekMs !== null) {
+      bump(`listening · ${plan.queue}${plan.seekMs !== null ? ' + seek' : ''}`);
+    }
+    if (plan.queue === 'keep' && plan.seekMs !== null) {
+      note(`listening · drift ${Math.round(local.positionMs - plan.seekMs)} ms`);
+    }
     if (plan.queue === 'wait') return;
     if (plan.queue === 'clear') {
       quiet();
