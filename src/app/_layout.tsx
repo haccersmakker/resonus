@@ -46,7 +46,6 @@ import { useEqualizer } from '@/store/equalizer';
 import { useLastPlayed } from '@/store/lastPlayed';
 import { useLibraries } from '@/store/libraries';
 import { useLibraryMirror } from '@/store/libraryMirror';
-import { initListeningSessions } from '@/store/listeningSession';
 import { initNetworkType } from '@/store/networkType';
 import { useOfflineQueue } from '@/store/offlineQueue';
 import { usePins } from '@/store/pins';
@@ -195,9 +194,6 @@ export default function RootLayout() {
     // Server URL switching on network change (profiles with multiple URLs).
     initAutoUrl();
     initRemoteIntegration();
-    // Listening together: the room's say over the player, and the saved
-    // listening server. Nothing connects until a room is started or joined.
-    initListeningSessions();
     // The widget, the Quick Settings tile and the launcher shortcuts.
     initHomeWidget();
     // The language in Android's per-app language setting, both ways.
@@ -350,7 +346,6 @@ export default function RootLayout() {
                 <Stack.Screen name="genres" />
                 <Stack.Screen name="genre/[name]" />
                 <Stack.Screen name="radio" />
-                <Stack.Screen name="listen-together" />
                 <Stack.Screen name="favorites" />
                 <Stack.Screen name="favorites-add" />
                 <Stack.Screen name="history" />

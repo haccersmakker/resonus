@@ -55,17 +55,6 @@ import { prefetchLyrics } from '@/hooks/useLyrics';
 import { tg } from '@/i18n';
 import { transcodeTarget } from '@/lib/audioQuality';
 import { favoriteLabel, favoriteState, onFavoritesChange, toggleFavorite } from '@/lib/remoteFavorite';
-import {
-  olsGuestControl,
-  olsGuestToggle,
-  olsHoldHere,
-  olsLocalTransport,
-  olsResumeHere,
-  olsPlayerStatus,
-  olsQuit,
-  olsRole,
-} from '@/lib/listeningSessionBridge';
-import { isOlsServerSong } from '@/lib/listeningSessions';
 import type { Remap } from '@/lib/navidromeRemap';
 import { remapSong } from '@/lib/navidromeRemap';
 import { noteOwnReport } from '@/lib/ownReports';
@@ -137,29 +126,6 @@ export type { RepeatMode };
  */
 export const SOURCE_FAVORITES = '@@favorites';
 export const SOURCE_HISTORY = '@@history';
-/** A queue a listening room's host handed this device. */
-export const SOURCE_LISTENING = '@@listening';
-
-// ── Listening together ──────────────────────────────────────────────────────
-// In a room the host's queue is everybody's. These two are asked by every
-// action that would change it (see `lib/listeningSessionBridge`).
-
-/** A guest's queue is the host's: refuse, and say why. */
-function guestLocked(): boolean {
-  if (olsRole() !== 'guest') return false;
-  useToast.getState().show(tg('Only the host can change the queue'));
-  return true;
-}
-
-/**
- * What a host plays, every guest has to find on their own account of the same
- * server, by id. A station, a podcast or a file on this phone has no id there.
- */
-function hostRefuses(songs: Song[]): boolean {
-  if (olsRole() !== 'host' || songs.every(isOlsServerSong)) return false;
-  useToast.getState().show(tg('Only songs from your server can be played while listening together'));
-  return true;
-}
 
 let sleepTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -254,9 +220,6 @@ function fireSleepTimer() {
   else activePlayer()?.pause();
   cutCrossfade();
   usePlayerStore.setState({ isPlaying: false, sleepEndsAt: null });
-  // A guest falling asleep stops this phone, not the room, and the room's next
-  // heartbeat must not start it again.
-  olsHoldHere();
 }
 
 // ── Audio engine (expo-audio) ───────────────────────────────────────────────
@@ -1736,8 +1699,6 @@ function extendWithRadio(radioId: string, href: string, tail: string): Promise<b
 }
 
 async function maybeQueueAutoplay() {
-  // A guest's queue grows when the host's does, and only then.
-  if (olsRole() === 'guest') return;
   const { queue, index, repeat, radioMode, radioSeed, sourceHref } = usePlayerStore.getState();
   // With repeat the queue never "runs out", so plain autoplay has no end to
   // extend past; and if 2+ songs remain, not yet.
@@ -1869,10 +1830,8 @@ function replaceSource(p: AudioPlayer, source: AudioSource) {
 function gaplessReady(): boolean {
   const settings = useSettings.getState();
   // Crossfade drives the advance itself, starting the next track early on the
-  // reserve player. Both cannot own the change. A guest's crossfade is the
-  // host's: it follows the change when the host makes it, and joins on its own
-  // only when it got to the end first (see `planOlsGuest`).
-  if (settings.crossfadeSec > 0 && olsRole() !== 'guest') return false;
+  // reserve player. Both cannot own the change.
+  if (settings.crossfadeSec > 0) return false;
   if (remoteKind()) return false;
   const st = usePlayerStore.getState();
   // 'one' repeats through the native `loop`, and "stop at end of song" needs
@@ -2135,7 +2094,7 @@ let fadeState: {
  * track change, seek, pause, reset, remote output…) so the rest of the
  * engine operates as if there were no crossfade.
  */
-function cutCrossfade(keepSleepFade = false) {
+function cutCrossfade() {
   // An in-progress server handoff also uses the reserve player and is also
   // an operation that any intervention (track change, seek, pause,
   // reset…) must abort: goes through here, which is the common path.
@@ -2159,9 +2118,8 @@ function cutCrossfade(keepSleepFade = false) {
   // The sleep fade is also an in-progress ramp: if the user touches anything
   // (pause, seek, track change) it must be released, or it would keep lowering
   // the volume of whatever plays now. The expiry still stands and `onStatus`
-  // re-arms it if still within the window. A room's own play, pause or seek
-  // is nobody's hand on the controls, and leaves it where it was.
-  if (!keepSleepFade) clearSleepFade();
+  // re-arms it if still within the window.
+  clearSleepFade();
   const volume = usePlayerStore.getState().volume;
   if (fadingOut) {
     try {
@@ -2173,7 +2131,7 @@ function cutCrossfade(keepSleepFade = false) {
     fadingOut = null;
   }
   const p = activePlayer();
-  if (p && !sleepFadeTimer) p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
+  if (p) p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
 }
 
 // ── Seamless server handoff ──────────────────────────────────────────────────
@@ -2308,9 +2266,6 @@ function maybeStartCrossfade(status: AudioStatus) {
   const fadeSec = useSettings.getState().crossfadeSec;
   // `handoffReserve`: a server handoff is using the reserve player.
   if (fadeSec <= 0 || fadingOut || handoffReserve || !status.playing) return;
-  // A guest starting the next song early would be ahead of the room for the
-  // whole fade, and pulled back to the end of this one by its next state.
-  if (olsRole() === 'guest') return;
   const st = usePlayerStore.getState();
   // Same cases excluded by normal advance, plus those with no predictable end
   // (radio) or where a fade makes no sense (very short tracks).
@@ -2703,9 +2658,6 @@ function onStatus(status: AudioStatus, live = false) {
     !prev.isBuffering &&
     !pendingSeek &&
     !fadeState;
-  // After this one is handled, whatever it is: a waiting guest reads the
-  // player itself, and its pending seek is cleared below.
-  void Promise.resolve().then(olsPlayerStatus);
   if (routine && !live && now - lastStatusAt < BACKLOG_GAP_MS) {
     bump('player · piled-up beat dropped');
     return;
@@ -2749,21 +2701,6 @@ function onStatus(status: AudioStatus, live = false) {
       positionSec = pendingSeek.sec;
     }
   }
-  // Play or pause that came from outside the app: the notification, the lock
-  // screen, a headset, headphones coming out, a call. Those go straight to the
-  // native player and this is the first JS hears of them. Everything the app
-  // starts or stops itself has already written the store by now, and a
-  // loading or buffering player says nothing either way.
-  // Nor does a source that has not started (a new one reads paused at 0:00
-  // on some platforms before it plays) or one that has run out.
-  const nativeTransport =
-    status.isLoaded &&
-    !status.isBuffering &&
-    !status.didJustFinish &&
-    status.playbackState !== 'ended' &&
-    (status.currentTime ?? 0) > 0 &&
-    !pauseFadeTimer &&
-    status.playing !== prev.isPlaying;
   usePlayerStore.setState({
     positionSec,
     // With offset active the native reports the duration of the remaining segment,
@@ -2774,16 +2711,13 @@ function onStatus(status: AudioStatus, live = false) {
     isPlaying: pauseFadeTimer ? prev.isPlaying : status.playing,
     isBuffering: buffering,
   });
-  if (nativeTransport) olsLocalTransport(status.playing);
   maybeScrobbleThreshold(positionSec);
   maybeDetectStall(intendPlay, buffering, positionSec);
   // Queue sync with the server.
   if (status.playing) {
     // Something is actually coming out of the speaker: from here on this
     // device has an opinion worth sending (see `playedHere`).
-    // Not a guest's: the room's queue is the host's word, and leaving the room
-    // must not push it to this account as the one it was listening to.
-    if (olsRole() !== 'guest') markPlayedHere();
+    markPlayedHere();
     startPeriodicSync();
   } else {
     stopPeriodicSync();
@@ -2820,7 +2754,6 @@ function handleSleepAtSongEnd(): boolean {
   const { sleepAtSongEnd, repeat } = usePlayerStore.getState();
   if (!sleepAtSongEnd) return false;
   usePlayerStore.setState({ isPlaying: false });
-  olsHoldHere();
   cutCrossfade();
   activePlayer()?.pause();
   const ni = nextIndex(false);
@@ -2943,9 +2876,6 @@ export function remapQueueIds(f: Remap) {
 function saveQueueLocal(force = false) {
   const key = queueStorageKey();
   if (!key) return;
-  // A guest's own queue and modes stay saved as they were: if the app dies in
-  // a room, it comes back to them, not to a room that is gone.
-  if (olsRole() === 'guest') return;
   const {
     queue,
     index,
@@ -3033,8 +2963,6 @@ let wentAway = 0;
 
 async function adoptNewerServerQueue(): Promise<void> {
   if (!useSettings.getState().syncQueueFromServer) return;
-  // In a room the queue is the room's, whoever left another one on the server.
-  if (olsRole()) return;
   const { auth, offline } = useAuthStore.getState();
   if (!auth || offline) return;
   const before = usePlayerStore.getState();
@@ -3144,9 +3072,7 @@ function syncQueueNow(force = false, syncRemote = true) {
   const { auth, offline } = useAuthStore.getState();
   const { queue, index, positionSec, isPlaying } = usePlayerStore.getState();
   const current = queue[index];
-  // A guest's queue is the host's, and writing it over the one this account
-  // keeps on its server would lose that one to a room nobody asked to save.
-  if (auth && !offline && current && !current.url && !current.localUri && olsRole() !== 'guest') {
+  if (auth && !offline && current && !current.url && !current.localUri) {
     const ids = queue.filter((s) => !s.url && !s.localUri).map((s) => s.id);
     if (ids.length > 0) {
       const positionMs = Math.floor(positionSec * 1000);
@@ -3665,7 +3591,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   playQueue: async (songs, startIndex = 0, source, sourceHref, opts) => {
     if (songs.length === 0) return false;
-    if (guestLocked() || hostRefuses(songs)) return false;
     // Discard offline-unavailable tracks (not downloaded): they can't be
     // played. The initial index is remapped to the tapped song within the
     // already-filtered list. Online never marks `unavailable`, so it doesn't change.
@@ -3764,7 +3689,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   startRadio: async (seed, source) => {
-    if (guestLocked() || hostRefuses([seed])) return false;
     const cur = currentSong(get());
     if (cur && cur.id === seed.id) {
       // Mix seeded by what's already playing: only the queue AROUND it changes,
@@ -3821,7 +3745,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   stopRadio: () => {
-    if (guestLocked()) return;
     set({ radioMode: false, radioSeed: null });
     saveQueueLocal();
   },
@@ -3845,7 +3768,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
    * into the middle of an album and taken the header with it (`handAdded`).
    */
   addToQueue: (song) => {
-    if (guestLocked() || hostRefuses([song])) return;
     const { queue } = get();
     if (queue.length === 0) {
       void get().playQueue([song], 0);
@@ -3856,7 +3778,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playNext: (song) => {
-    if (guestLocked() || hostRefuses([song])) return;
     const st = get();
     if (st.queue.length === 0) {
       void get().playQueue([song], 0);
@@ -3868,7 +3789,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   queueMany: (songs, where) => {
     if (songs.length === 0) return;
-    if (guestLocked() || hostRefuses(songs)) return;
     const st = get();
     // Nothing playing: this is not a queue to add to, it is the queue.
     if (st.queue.length === 0) {
@@ -3880,9 +3800,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   toggle: () => {
-    // A guest's play and pause are the room's: asked of the host, or this
-    // phone catching up with a room it had stopped listening to.
-    if (olsGuestToggle()) return;
     // The one press that does not change track: what was restored is about to
     // be heard, so what the opening held back is due now.
     endBootQuiet(true);
@@ -3952,7 +3869,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   next: () => {
-    if (olsGuestControl({ action: 'next' })) return;
     endBootQuiet();
     const ni = nextIndex(true);
     if (ni != null) {
@@ -3962,7 +3878,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   previous: () => {
-    if (olsGuestControl({ action: 'previous' })) return;
     endBootQuiet();
     const { index, positionSec } = get();
     // Like Spotify: past a few seconds, "previous" restarts the song. In
@@ -3979,13 +3894,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     // At the start of the queue: return to the previous context from history.
     // Entries of this same list point further into it, left there by the
-    // advances the steps above walked back over. Not in a room: what was
-    // played before it is not the room's to go back to.
+    // advances the steps above walked back over.
     const { queue, source, sourceHref } = get();
     const key = contextKey(source, sourceHref);
     const sameList = (e: HistoryEntry) =>
       e.queue === queue || (key != null && contextKey(e.source, e.sourceHref) === key);
-    let entry = olsRole() ? undefined : playedHistory.pop();
+    let entry = playedHistory.pop();
     while (entry && sameList(entry)) entry = playedHistory.pop();
     if (entry) {
       set({
@@ -4017,7 +3931,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     // A radio has no length to stay inside of, and a stream still loading has
     // not said its own yet.
     const target = Math.max(0, duration > 0 ? Math.min(sec, duration) : sec);
-    if (olsGuestControl({ action: 'seek', positionMs: Math.round(target * 1000) })) return;
     cutCrossfade();
     if (remoteKind()) {
       remoteSeek(target);
@@ -4045,13 +3958,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   setSpeed: (v) => {
-    // Everybody in a room plays the same seconds at the same time, and a room
-    // has no speed to share. Nor is speed used to keep in step: Original
-    // quality means the samples as they are.
-    if (olsRole()) {
-      useToast.getState().show(tg('Playback speed stays at 1× while listening together'));
-      return;
-    }
     // The ends of what is offered. Android clamps to 0.1–2 on its own, and a
     // rate that came back clamped would leave the list showing a speed that is
     // not the one playing.
@@ -4063,17 +3969,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   jumpTo: (index, kind = 'pick') => {
+    endBootQuiet();
     const { queue } = get();
     if (index < 0 || index >= queue.length) return;
-    if (olsGuestControl({ action: 'jump', index })) return;
-    endBootQuiet();
     // Forward jump like any other: "previous" must be able to return.
     pushHistory();
     void loadIndex(index, kind === 'skip' ? skipAutoplay(get().isPlaying) : true);
   },
 
   removeAt: async (index) => {
-    if (guestLocked()) return undefined;
     const removal = removeFrom(get(), index);
     if (!removal) return undefined;
     const removed = get().queue[index];
@@ -4101,7 +4005,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   clearQueue: () => {
-    if (guestLocked()) return undefined;
     const { queue, index, queuedCount, originalQueue, radioMode, radioSeed } = get();
     const current = queue[index];
     if (!current) return undefined;
@@ -4127,7 +4030,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   stopAndClear: async () => {
-    if (guestLocked()) return undefined;
     const {
       queue,
       index,
@@ -4193,7 +4095,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   moveTrack: async (from, to) => {
-    if (guestLocked()) return;
     const next = moveIn(get(), from, to);
     if (!next) return;
     set(next);
@@ -4201,7 +4102,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   toggleShuffle: () => {
-    if (guestLocked()) return;
     const { shuffle, queue, index, originalQueue, source, sourceHref } = get();
     const current = queue[index];
     const upnpActive = remoteKind() === 'upnp';
@@ -4238,8 +4138,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   cycleRepeat: () => {
-    // A guest repeats nothing on its own: what plays next is the host's call.
-    if (guestLocked()) return;
     // First tap: repeat current song ('one'); second: whole queue ('all');
     // third: off. Like Feishin.
     const order: RepeatMode[] = ['off', 'one', 'all'];
@@ -4278,7 +4176,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   restoreFromServer: async (replace = false) => {
-    if (guestLocked()) return false;
     const { auth, offline } = useAuthStore.getState();
     if (!auth || offline || (!replace && get().queue.length > 0)) return false;
     let saved;
@@ -4437,9 +4334,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   reset: async (forProfile = false) => {
-    // Out of a room before its queue goes: emptied first, the queue would
-    // reach the room as the host's, and empty every guest's.
-    if (forProfile) olsQuit();
     get().cancelSleepTimer();
     clearPlayedHere();
     autoplayFetchedFor = null;
@@ -4511,204 +4405,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     playbackReportAsking = null;
   },
 }));
-
-// ── What a listening room does to this player ──────────────────────────────
-// Used by `store/listeningSession` only. Nothing here asks the guards above:
-// these are the room's own state arriving, which is exactly what those guards
-// make room for.
-
-/**
- * Where the player is right now, read from the player rather than from the
- * status it reported up to half a second ago: a room timestamps positions to
- * the millisecond, and a host publishing a stale one has every guest trail it.
- */
-export function livePositionSec(): number {
-  const fallback = usePlayerStore.getState().positionSec;
-  const p = activePlayer();
-  if (!p || remoteKind() || pendingSeek) return pendingSeek?.sec ?? fallback;
-  try {
-    const t = p.currentTime;
-    return Number.isFinite(t) ? Math.max(0, streamOffsetSec + t) : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-/**
- * The player has the source, has got to the second it was last sent to, and
- * has enough of it to play from there. A status read straight after a seek can
- * still be the one from before it, so the seek has to have landed too.
- */
-export function olsPlayerReady(): boolean {
-  if (pendingSeek) return false;
-  try {
-    const st = activePlayer()?.currentStatus;
-    return !!st && st.isLoaded && !st.isBuffering;
-  } catch {
-    return false;
-  }
-}
-
-/** A seek on the current song is the player's own, not a new request to the server. */
-export function olsSeekIsLocal(): boolean {
-  const song = currentSong(usePlayerStore.getState());
-  return !!song && !needsOffsetSeek(song);
-}
-
-/**
- * Installs the room's queue on a guest and loads its song, paused: the caller
- * seeks before anything is heard, or joining half way through a song would
- * start with a burst of its first second. False if the load did not happen or
- * something else took the player meanwhile.
- */
-export async function olsInstall(songs: Song[], index: number): Promise<boolean> {
-  attachAppState();
-  clearPlayedHere();
-  autoplayFetchedFor = null;
-  autoplayRound = null;
-  artistFill = null;
-  resetWarmed();
-  usePlayerStore.setState({
-    queue: songs,
-    index,
-    queuedCount: 0,
-    positionSec: 0,
-    durationSec: songs[index]?.duration ?? 0,
-    isPlaying: false,
-    isBuffering: false,
-    shuffle: false,
-    queueDealt: false,
-    // Repeat is the host's to apply: a guest repeating on its own would loop
-    // a song the room has moved on from.
-    repeat: 'off',
-    originalQueue: null,
-    source: SOURCE_LISTENING,
-    // The header leads back to the room.
-    sourceHref: '/listen-together',
-    radioMode: false,
-    radioSeed: null,
-  });
-  // A player that was playing starts whatever it is handed next, from its
-  // first second: paused first, it stays paused.
-  try {
-    activePlayer()?.pause();
-  } catch {
-    // None yet, or one being replaced.
-  }
-  if (!(await loadIndex(index, false))) return false;
-  return usePlayerStore.getState().queue === songs;
-}
-
-/**
- * The room's queue changed around the song this guest is already playing:
- * the list is swapped and the sound left alone. Reloading the song for a
- * change further down the queue was a gap in every guest's music each time
- * the host added something.
- */
-export function olsAdopt(songs: Song[], index: number): void {
-  clearPlayedHere();
-  usePlayerStore.setState({
-    queue: songs,
-    index,
-    queuedCount: 0,
-    shuffle: false,
-    queueDealt: false,
-    repeat: 'off',
-    originalQueue: null,
-    source: SOURCE_LISTENING,
-    // The header leads back to the room.
-    sourceHref: '/listen-together',
-    radioMode: false,
-    radioSeed: null,
-  });
-  applyLoop(activePlayer());
-}
-
-/**
- * Play or pause as the room says, straight away and without the in-app fade:
- * a ramp is a timer, and timers stop with the screen off, which is where a
- * guest usually is.
- */
-export function olsSetPlaying(play: boolean): void {
-  cutCrossfade(true);
-  const p = activePlayer();
-  if (p) {
-    try {
-      if (!sleepFadeTimer) p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
-      if (play) p.play();
-      else p.pause();
-    } catch {
-      // A source being replaced; its own status settles it.
-    }
-  }
-  const st = usePlayerStore.getState();
-  usePlayerStore.setState({ isPlaying: play, isBuffering: play ? st.isBuffering : false });
-}
-
-/**
- * Stops the music for a moment of this phone's own, a preview, and only here.
- * A guest's play button is the room's, and a preview pausing it paused
- * everybody; this stops the guest alone, who catches up on pressing play.
- */
-export function pauseHere(): void {
-  if (olsRole() !== 'guest') {
-    usePlayerStore.getState().toggle();
-    return;
-  }
-  olsSetPlaying(false);
-  olsHoldHere();
-}
-
-/**
- * Puts back what `pauseHere` stopped. A guest rejoins the room as it is now,
- * which may be stopped: it never asks the host to start everybody again.
- */
-export function resumeHere(): void {
-  if (olsRole() !== 'guest') {
-    if (!usePlayerStore.getState().isPlaying) usePlayerStore.getState().toggle();
-    return;
-  }
-  olsResumeHere();
-}
-
-/**
- * The host emptied the room's queue, so the guest's goes too. Not `reset`:
- * that is for leaving a profile, and takes the sleep timer and the back
- * history with it.
- */
-export function olsClear(): void {
-  cutCrossfade();
-  try {
-    activePlayer()?.pause();
-  } catch {
-    // ignore
-  }
-  clearLockScreen();
-  usePlayerStore.setState({
-    queue: [],
-    index: 0,
-    queuedCount: 0,
-    isPlaying: false,
-    isBuffering: false,
-    positionSec: 0,
-    durationSec: 0,
-    originalQueue: null,
-    radioMode: false,
-    radioSeed: null,
-  });
-}
-
-/** Puts back how a guest was listening before a room set it aside. */
-export function olsRestoreModes(modes: { shuffle: boolean; repeat: RepeatMode }): void {
-  usePlayerStore.setState(modes);
-  applyLoop(activePlayer());
-}
-
-/** Seeks where the room says. */
-export function olsSeek(sec: number): void {
-  cutCrossfade(true);
-  seekActive(Math.max(0, sec));
-}
 
 // Gapless: what comes next changes with the queue, the position in it, the
 // repeat mode and the "stop at end of song" timer. Watching the store beats

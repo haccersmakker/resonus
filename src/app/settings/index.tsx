@@ -62,8 +62,6 @@ export default function SettingsScreen({ asTab = false }: { asTab?: boolean }) {
     title: string;
     icon: keyof typeof Icon.glyphMap;
     disabled?: boolean;
-    /** A screen of its own rather than one under Settings. */
-    href?: string;
   }[] = [
     { key: 'playback', title: 'Quality & playback', icon: 'musical-notes-outline' as const },
     { key: 'player', title: 'Player', icon: 'play-circle-outline' as const },
@@ -103,19 +101,6 @@ export default function SettingsScreen({ asTab = false }: { asTab?: boolean }) {
     // a ping, which is one of the two requests offline mode lets through. A
     // local profile has no server, so there is nothing for it here.
     ...(auth ? [{ key: 'network', title: 'Network', icon: 'git-network-outline' as const }] : []),
-    // A room plays a Subsonic server's songs by id, so it needs one, and a
-    // connection to it: greyed out offline like Library, absent otherwise.
-    ...(auth && auth.serverType !== 'jellyfin'
-      ? [
-          {
-            key: 'listen-together',
-            title: 'Listening together',
-            icon: 'headset-outline' as const,
-            href: '/listen-together',
-            disabled: serverOffline,
-          },
-        ]
-      : []),
     // Theme lives inside Appearance (row with chevron, like Language).
     { key: 'personalization', title: 'Appearance', icon: 'color-palette-outline' as const },
     { key: 'about', title: 'About::app', icon: 'information-circle-outline' as const },
@@ -194,7 +179,7 @@ export default function SettingsScreen({ asTab = false }: { asTab?: boolean }) {
               s.disabled && { opacity: 0.5 },
               pressed && !s.disabled && { opacity: 0.6 },
             ]}
-            onPress={() => router.push(s.href ?? `/settings/${s.key}`)}
+            onPress={() => router.push(`/settings/${s.key}`)}
           >
             <Icon name={s.icon} size={24} color={colors.text} />
             <Text style={styles.sectionRowTitle}>{t(s.title)}</Text>

@@ -19,7 +19,7 @@ import { Cover } from './Cover';
 import Icon from './Icon';
 import { useT } from '@/i18n';
 import { useAuthStore } from '@/store/auth';
-import { pauseHere, resumeHere, usePlayerStore } from '@/store/player';
+import { usePlayerStore } from '@/store/player';
 import { colors, fontSize, spacing, themed, tracking } from '@/theme';
 
 /** How many of the list's own songs are drawn from, and how many songs each
@@ -109,7 +109,7 @@ export function SuggestedTracks({
   const resumeMusic = useCallback(() => {
     if (!wasPlayingRef.current) return;
     wasPlayingRef.current = false;
-    if (!usePlayerStore.getState().isPlaying) resumeHere();
+    if (!usePlayerStore.getState().isPlaying) usePlayerStore.getState().toggle();
   }, []);
 
   useEffect(() => {
@@ -207,7 +207,7 @@ export function SuggestedTracks({
       const url = song.url || streamUrl(auth, song.id);
       if (!url) return;
       wasPlayingRef.current = usePlayerStore.getState().isPlaying;
-      if (wasPlayingRef.current) pauseHere();
+      if (wasPlayingRef.current) usePlayerStore.getState().toggle();
       // No precise timing: the preview only has to land near second 38, and on
       // iOS the exact seek scans the whole file first, which is the wait.
       const player = createAudioPlayer({ uri: url, preferPreciseTiming: false });

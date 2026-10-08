@@ -38,20 +38,12 @@ import { songsLabel, useT } from '@/i18n';
 import { formatTotalDuration } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { listPerf } from '@/lib/listPerf';
-import { pushOrReplace } from '@/lib/pushOrReplace';
 import { useAuthStore } from '@/store/auth';
-import { useListeningSession, useListeningRole } from '@/store/listeningSession';
-import {
-  mixSeedOf,
-  SOURCE_FAVORITES,
-  SOURCE_HISTORY,
-  SOURCE_LISTENING,
-  usePlayerStore,
-} from '@/store/player';
+import { mixSeedOf, SOURCE_FAVORITES, SOURCE_HISTORY, usePlayerStore } from '@/store/player';
 import { usePlaylistPicker } from '@/store/playlistPicker';
 import { useSettings } from '@/store/settings';
 import { useToast } from '@/store/toast';
-import { colors, fontSize, radius, spacing, themed, useTheme, tracking } from '@/theme';
+import { colors, fontSize, spacing, themed, useTheme, tracking } from '@/theme';
 
 // ReorderableList doesn't support removeClippedSubviews (needs cells mounted
 // to animate the drag); we use the rest of the performance props.
@@ -96,13 +88,10 @@ const QueueRow = memo(function QueueRow({
   item,
   absIndex,
   state,
-  editable,
 }: {
   item: Song;
   absIndex: number;
   state: 'previous' | 'current' | 'upcoming';
-  /** False for a guest in a listening room: the queue is the host's. */
-  editable: boolean;
 }) {
   const jumpTo = usePlayerStore((s) => s.jumpTo);
   const removeAt = usePlayerStore((s) => s.removeAt);
@@ -126,7 +115,7 @@ const QueueRow = memo(function QueueRow({
       <Pressable
         style={styles.main}
         onPress={current ? undefined : () => jumpTo(absIndex)}
-        onLongPress={editable ? () => { haptic('medium'); drag(); } : undefined}
+        onLongPress={() => { haptic('medium'); drag(); }}
       >
         {showListArtwork ? (
           <View style={styles.artwork}>
@@ -143,21 +132,12 @@ const QueueRow = memo(function QueueRow({
 
       <View style={styles.actions}>
         {current ? <PlayingBars size={18} /> : null}
-        {editable ? (
-          <>
-            <Pressable
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={t('Remove from queue')}
-              onPress={() => void remove()}
-            >
-              <Icon name="close" size={22} color={colors.textSecondary} />
-            </Pressable>
-            <Pressable hitSlop={6} onPressIn={() => { haptic('medium'); drag(); }}>
-              <Icon name="reorder-two" size={24} color={colors.textSecondary} />
-            </Pressable>
-          </>
-        ) : null}
+        <Pressable hitSlop={6} onPress={() => void remove()}>
+          <Icon name="close" size={22} color={colors.textSecondary} />
+        </Pressable>
+        <Pressable hitSlop={6} onPressIn={() => { haptic('medium'); drag(); }}>
+          <Icon name="reorder-two" size={24} color={colors.textSecondary} />
+        </Pressable>
       </View>
     </View>
   );
@@ -182,14 +162,7 @@ export default function QueueScreen() {
   const restoreFromServer = usePlayerStore((s) => s.restoreFromServer);
   // The server's copy is only there for an account with a connection: a local
   // profile has no server, and offline there is nobody to ask.
-  const online = useAuthStore((s) => !!s.auth && !s.offline);
-  const subsonic = useAuthStore((s) => s.auth?.serverType !== 'jellyfin');
-  // A guest's queue is the host's: tapping a song asks the host to play it,
-  // and nothing here moves, removes or replaces anything.
-  const listening = useListeningRole();
-  const roomCode = useListeningSession((s) => s.room?.code);
-  const guest = listening === 'guest';
-  const hasServerQueue = online && !guest;
+  const hasServerQueue = useAuthStore((s) => !!s.auth && !s.offline);
   // Subscribed, not read straight off `colors`: a stack keeps this screen
   // mounted while you are elsewhere, so without this it would keep the accent
   // and the appearance it was last painted in.
@@ -247,9 +220,7 @@ export default function QueueScreen() {
       ? t('Favorites')
       : source === SOURCE_HISTORY
         ? t('History')
-        : source === SOURCE_LISTENING
-          ? t('Listening together')
-          : source;
+        : source;
   const contextHeader = sourceName ? t('Next from {name}', { name: sourceName }) : null;
   /**
    * Where a song ahead of the cursor came from, which is what decides its
@@ -294,8 +265,7 @@ export default function QueueScreen() {
   // The title is centred over the whole bar, so it has to stay clear of the
   // icons on both sides: as much room on the left as the right side takes,
   // or a long word slides under them (#232).
-  const canClear = upcoming.length > 0 && !guest;
-  const rightIcons = (radioMode ? 1 : 0) + (canClear ? 1 : 0) + (queue.length > 0 ? 1 : 0);
+  const rightIcons = (radioMode ? 1 : 0) + (upcoming.length > 0 ? 1 : 0) + (queue.length > 0 ? 1 : 0);
   const titleInset =
     spacing.lg + Math.max(1, rightIcons) * HEADER_ACTION_W + Math.max(0, rightIcons - 1) * spacing.sm;
 
@@ -342,7 +312,7 @@ export default function QueueScreen() {
               <Icon name="sparkles" size={22} color={accent} />
             </Pressable>
           ) : null}
-          {canClear ? (
+          {upcoming.length > 0 ? (
             <Pressable
               style={styles.headerAction}
               hitSlop={10}
@@ -367,22 +337,6 @@ export default function QueueScreen() {
         </View>
       </View>
 
-      {listening && roomCode ? (
-        <Pressable
-          accessibilityRole="button"
-          style={({ pressed }) => [styles.room, { marginHorizontal: listPad }, pressed && { opacity: 0.6 }]}
-          onPress={() => pushOrReplace('/listen-together', 'queue')}
-        >
-          <Icon name="headset-outline" size={20} color={accent} />
-          <Text style={styles.roomText} numberOfLines={2}>
-            {guest
-              ? t('Listening together · {code} · the host chooses what plays', { code: roomCode })
-              : t('Listening together · {code} · you’re the host', { code: roomCode })}
-          </Text>
-          <Icon name="chevron-forward" size={18} color={colors.textMuted} />
-        </Pressable>
-      ) : null}
-
       {current ? (
         <ReorderableList
           {...queueListPerf}
@@ -402,13 +356,12 @@ export default function QueueScreen() {
                   item={item}
                   absIndex={abs}
                   state={abs === index ? 'current' : abs < index ? 'previous' : 'upcoming'}
-                  editable={!guest}
                 />
               </View>
             );
           }}
           onReorder={({ from, to }: ReorderableListReorderEvent) => {
-            if (!guest) moveTrack(start + from, start + to);
+            moveTrack(start + from, start + to);
           }}
           contentContainerStyle={[styles.list, { paddingHorizontal: listPad }]}
         />
@@ -464,18 +417,6 @@ export default function QueueScreen() {
               <Icon name="add" size={24} color={colors.text} />
               <Text style={styles.actionText}>{t('Add to a playlist')}</Text>
             </Pressable>
-            {online && subsonic ? (
-              <Pressable
-                style={({ pressed }) => [styles.action, pressed && { opacity: 0.6 }]}
-                onPress={() => {
-                  close();
-                  pushOrReplace('/listen-together', 'queue');
-                }}
-              >
-                <Icon name="headset-outline" size={24} color={colors.text} />
-                <Text style={styles.actionText}>{t('Listening together')}</Text>
-              </Pressable>
-            ) : null}
             {/* The queue is pushed to the server as it changes, but what comes
                 back is only read when this device has none of its own: the copy
                 here is the faithful one and replacing it behind somebody's back
@@ -535,17 +476,6 @@ const styles = themed((colors) => ({
   headerSub: { color: colors.textSecondary, fontSize: fontSize.xs, marginTop: 2 },
   list: { flexGrow: 1, paddingBottom: spacing.sm },
   emptyWrap: { flex: 1, justifyContent: 'center' },
-  room: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.surface,
-  },
-  roomText: { flex: 1, color: colors.textSecondary, fontSize: fontSize.sm },
   sectionHeader: {
     color: colors.textSecondary,
     fontSize: fontSize.sm,

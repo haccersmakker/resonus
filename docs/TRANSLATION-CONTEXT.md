@@ -5,7 +5,7 @@
      `src/i18n/context.jsonc`, and where a string shows up is read off the
      code, so both are fixed at the source and this page follows. -->
 
-Every string the app can show, under the screen it shows up on. 843 of them.
+Every string the app can show, under the screen it shows up on. 787 of them.
 The second column is only filled in where the English is ambiguous on its own
 If one tripped you up and the column is empty, that is worth telling us, and
 the answer goes into `src/i18n/context.jsonc` where the next translator of the
@@ -50,8 +50,6 @@ you are actually typing into, which is easier than reading it here.
 | `Continue listening` | Shortcut on the app's launcher icon (long press): resumes the last queue. Short: launchers cut long labels |
 | `Couldn't create the link` | The server would not make a share link |
 | `Couldn't find anything to mix with this song` | Toast: the server had nothing similar to carry on with |
-| `Couldn’t load the room’s songs from your server. Trying again…` |  |
-| `Couldn’t reach the listening server.` |  |
 | `Couldn't refresh the radio` |  |
 | `Couldn't save the file` | Toast: writing to the chosen folder failed |
 | `Couldn't send the file` | Toast: handing it to another app failed |
@@ -72,12 +70,10 @@ you are actually typing into, which is easier than reading it here.
 | `Go to artist radio` |  |
 | `Home` | The first tab, and a folder in the car |
 | `Library` | The settings section, and a folder in the car |
-| `Lost the connection to the listening room.` |  |
 | `Mix of “{name}”` | What the player calls the queue once it has grown past its album into songs the app picked itself. `{name}` is the song it was grown from |
 | `Mix started` | The toast that says the app is now picking the songs |
 | `Moods` | Mood tags the server has on the song: mellow, energetic… |
 | `New features` | Heading in the update prompt over the new things a release brings. The lines under it stay in English |
-| `No room with that code. Check it and try again.` |  |
 | `Open settings` | Its confirm button: goes to Android's own settings, not the app's |
 | `Pick a date…` | Opens the calendar to choose the day the link stops working |
 | `Pin to top` | Keep this at the top of its list, above everything else. `Unpin` undoes it |
@@ -102,7 +98,6 @@ you are actually typing into, which is easier than reading it here.
 | `Send to another app` | A value of `Export`: hand the file to another app |
 | `Sending to another app isn't available on this device` | Toast: this phone has nothing that takes a shared file |
 | `Server didn't allow downloads` | Warning after sharing: the link was made and works, but the call that turns downloading on did not go through |
-| `Set the playback speed back to 1× before listening together.` |  |
 | `Share` | Make a link on the server that others can open. Getting the file itself out is `Export` |
 | `Share “{name}”` | The sheet's title, with what is being shared |
 | `Shuffle favorites` | Shortcut on the app's launcher icon (long press). Short: launchers cut long labels |
@@ -111,23 +106,13 @@ you are actually typing into, which is easier than reading it here.
 | `Sleep timer ({n} min left)` | The menu row while it is counting down. `{n}` is minutes still to go |
 | `Sleep timer (end of song)` | The same row when it is set to stop at the end of this song |
 | `Sleep timer off` | The toast that says it was turned off |
-| `Something went wrong with the listening room.` |  |
 | `Song information` | The menu action and the sheet's title: what is known about the track |
 | `Start mix` | Start an auto-generated radio mix from this song |
-| `Stop casting before listening together.` |  |
-| `That room is full.` |  |
-| `That server doesn’t speak Open Listening Sessions 1.` |  |
-| `The host ended the room.` |  |
 | `The link expires in` | Heading over the choices below. They are spans from the moment the link is made, not times of day |
-| `The listening room closed.` |  |
-| `The listening server sent something unexpected.` |  |
 | `This download is a {n} kbps copy, not the original file.` | Shown before exporting: the file on the phone was transcoded when it was downloaded. `{n}` is a bitrate |
 | `This song carries no information.` | Empty state: the file and the server had nothing to say |
-| `This song isn’t available on your account.` |  |
-| `Too many attempts. Wait a moment and try again.` |  |
 | `Track` | The track number on its album. Not the song itself |
 | `Turn off` | Turn off the sleep timer |
-| `Unavailable song` |  |
 | `Unknown title` | Fallback when the file and the server have no title |
 | `Unpin` | Stop keeping it at the top of its list |
 | `Update` | The button that installs a newer version of Resonus. A verb, not a noun: `Update it`, not `An update` |
@@ -396,60 +381,6 @@ you are actually typing into, which is easier than reading it here.
 | `Your playlists and what you star show up here.` |  |
 | `Yours` |  |
 
-## Listen together
-
-| String | What it is |
-| --- | --- |
-| `An Open Listening Sessions server. It is not your music server, and it never sees your password or what the songs are.` |  |
-| `Couldn’t load the room’s songs from your server. Trying again…` |  |
-| `Couldn’t reach the listening server.` |  |
-| `End the room` | The host closing the room for everybody in it |
-| `Enter the address of a listening server.` |  |
-| `Guest` | Anybody in a listening room who is not the host |
-| `Host` | The person in a listening room whose queue everybody hears. A person, not a network host or a server |
-| `In the room ({n})` |  |
-| `Invitation` |  |
-| `Join` | Button: enter a listening room. A verb |
-| `Join a room` |  |
-| `Join again` |  |
-| `Leave the room` |  |
-| `Leave this room to join another one.` |  |
-| `Listen with me on Resonus: {link}` |  |
-| `Listener` | The name shown for somebody in a room who did not give one |
-| `Listening server` | The separate server that keeps everybody in a room in step. Not the music server: it never plays or stores music |
-| `Listening together` | The feature's name: several people hearing the same songs at the same moment, each on their own phone. Also the name of the screen |
-| `Listening together needs a Subsonic server and a connection.` |  |
-| `Lost the connection to the listening room.` |  |
-| `Music from {server} · room on {coordinator}` |  |
-| `No room with that code. Check it and try again.` |  |
-| `Paused on this phone. The room is still playing: press play to catch up.` |  |
-| `Play the same music at the same moment as other people on your server. Everyone streams from their own account; only the queue and the controls are shared.` |  |
-| `Room code` | The few letters and digits that let somebody join a room |
-| `Room code: {code}` |  |
-| `Set the playback speed back to 1× before listening together.` |  |
-| `Share invitation` |  |
-| `Something went wrong with the listening room.` |  |
-| `Start a room` |  |
-| `Stop casting before listening together.` |  |
-| `That invitation isn’t valid.` |  |
-| `That room is full.` |  |
-| `That room plays from another server. Switch to that server’s profile first.` |  |
-| `That server doesn’t speak Open Listening Sessions 1.` |  |
-| `The code the host shared, or their whole invitation pasted here.` |  |
-| `The host chooses what plays. Your buttons ask the host.` |  |
-| `The host ended the room.` |  |
-| `The listening room closed.` |  |
-| `The listening server sent something unexpected.` |  |
-| `The music stops being shared, and everybody in the room leaves it.` |  |
-| `This song isn’t available on your account.` |  |
-| `Too many attempts. Wait a moment and try again.` |  |
-| `Unavailable song` |  |
-| `What the others in the room see. Your account name on the server is never shared.` |  |
-| `You` | Marks your own name in the list of people in a room |
-| `You host: what you play, everyone hears.` |  |
-| `You’re the host: your queue is the room’s.` |  |
-| `Your name` |  |
-
 ## Login
 
 | String | What it is |
@@ -517,7 +448,6 @@ you are actually typing into, which is easier than reading it here.
 | `Explicit` | A value of `Content`: the recording carries a parental advisory (strong language). Also read out for the E badge next to a title |
 | `Forward {n} seconds` | Read out by the screen reader for the seek button. `{n}` is how many seconds it is set to |
 | `History` | The listening history: what was played and when |
-| `Listening together` | The feature's name: several people hearing the same songs at the same moment, each on their own phone. Also the name of the screen |
 | `Mix of “{name}”` | What the player calls the queue once it has grown past its album into songs the app picked itself. `{name}` is the song it was grown from |
 | `No devices found` |  |
 | `NOW PLAYING` | Small label above the cover, in the same place and style as `PLAYING FROM`, when there is nothing to name |
@@ -536,7 +466,6 @@ you are actually typing into, which is easier than reading it here.
 | `Show remaining time` |  |
 | `Show total time` |  |
 | `Sleep timer` | Stop playing after a while, for falling asleep to |
-| `Stop listening together before casting.` |  |
 | `This phone` | The on-device profile, with no server account |
 | `View queue` | Read out by the screen reader for the button that opens the queue |
 
@@ -632,42 +561,23 @@ you are actually typing into, which is easier than reading it here.
 | --- | --- |
 | `At the end of the queue` | Queue screen header: the songs 'Add to queue' put after everything else |
 | `Clear queue` | Menu action: empty the list of what is coming |
-| `Couldn’t load the room’s songs from your server. Trying again…` |  |
-| `Couldn’t reach the listening server.` |  |
 | `Explicit` | A value of `Content`: the recording carries a parental advisory (strong language). Also read out for the E badge next to a title |
 | `Get the server's queue` | Queue screen action: replace what is playing here with the queue the server has, which is the one left on another player |
 | `History` | The listening history: what was played and when |
-| `Listening together` | The feature's name: several people hearing the same songs at the same moment, each on their own phone. Also the name of the screen |
-| `Listening together · {code} · the host chooses what plays` |  |
-| `Listening together · {code} · you’re the host` |  |
-| `Lost the connection to the listening room.` |  |
 | `Mix of “{name}”` | What the player calls the queue once it has grown past its album into songs the app picked itself. `{name}` is the song it was grown from |
 | `Next from {name}` | Heading on the queue screen: what is coming, and where it comes from. `{name}` is an album, a playlist or a mix |
 | `Next in queue` | Queue screen header: the track that plays next |
-| `No room with that code. Check it and try again.` |  |
 | `Now playing` | Heading on the queue screen over the song sounding right now. The player's own label is `NOW PLAYING`, a different string |
 | `Play a song or album to start the queue.` | The line under the empty queue |
 | `Queue` | The list of songs waiting to play. Not a playlist |
 | `Queue brought over` | The toast that says it worked |
 | `Queue cleared` | Toast |
-| `Remove from queue` |  |
 | `Removed from queue` | Toast |
-| `Set the playback speed back to 1× before listening together.` |  |
-| `Something went wrong with the listening room.` |  |
-| `Stop casting before listening together.` |  |
 | `Stop the mix` | Stop the app carrying on with similar songs when the queue runs out |
-| `That room is full.` |  |
-| `That server doesn’t speak Open Listening Sessions 1.` |  |
 | `The current song keeps playing.` | The line under the clear-queue dialog: only what is coming goes |
-| `The host ended the room.` |  |
-| `The listening room closed.` |  |
-| `The listening server sent something unexpected.` |  |
 | `The mix won't grow any further` | Toast after stopping the mix: what is in the queue stays, nothing new is added |
 | `The queue is empty.` | Empty state on the queue screen |
 | `The server has no saved queue` | The toast when the server had nothing to bring over |
-| `This song isn’t available on your account.` |  |
-| `Too many attempts. Wait a moment and try again.` |  |
-| `Unavailable song` |  |
 
 ## Radio
 
@@ -1288,12 +1198,9 @@ you are actually typing into, which is easier than reading it here.
 | `Nothing here is downloaded` | Toast when playing something that is not downloaded, offline |
 | `Nothing to shuffle yet` | Empty state: there is nothing here to play in random order |
 | `Offline` | The toast shown when the app falls into offline mode by itself, and the badge that says it is in it |
-| `Only songs from your server can be played while listening together` |  |
-| `Only the host can change the queue` |  |
 | `Pause` | Read out by the screen reader for the pause button. A verb |
 | `Play` | Read out by the screen reader for the play button. A verb |
 | `Play next` | Action: put this song right after the one playing, without clearing the rest |
-| `Playback speed stays at 1× while listening together` |  |
 | `Playing next` | The toast that says `Play next` worked. Not the same string, and not a heading |
 | `Playlist name` | The name field when making or renaming a playlist |
 | `Playlists` | A section on Home and in the library, and a folder in the car |
