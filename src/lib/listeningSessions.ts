@@ -556,32 +556,35 @@ export function olsInviteFromLinkParams(p: {
 /**
  * The invite the link screen was opened with. expo-router decodes a query value
  * twice (reading the URL, then again in `useLocalSearchParams`), which turns a
- * `%20` in an address into a space. So when the values don't make an invite,
- * the link the app was opened with is read once, and taken if it is the one
- * those values came from.
+ * `%20` in an address into a space, or `%7E` into a `~` that still reads as an
+ * address, only not the host's. So the link the app was opened with is read
+ * first, once, and taken if it is the one those values came from; the values
+ * alone only when it is not.
  */
 export function olsInviteFromRoute(
   params: Record<string, unknown>,
   linkingUrl: string | null,
 ): OlsInvite | null {
-  const direct = olsInviteFromLinkParams(params);
-  if (direct || !linkingUrl) return direct;
-  const parsed = parseOlsInviteText(linkingUrl);
-  if (!parsed || !('invite' in parsed)) return null;
-  const { invite } = parsed;
-  const twice = (v: string) => {
-    try {
-      return decodeURIComponent(v);
-    } catch {
-      return v;
+  const parsed = linkingUrl ? parseOlsInviteText(linkingUrl) : null;
+  if (parsed && 'invite' in parsed) {
+    const { invite } = parsed;
+    const twice = (v: string) => {
+      try {
+        return decodeURIComponent(v);
+      } catch {
+        return v;
+      }
+    };
+    if (
+      params.coordinator === twice(invite.coordinator) &&
+      params.server === twice(invite.mediaProfile.server) &&
+      params.libraryId === invite.mediaProfile.libraryId &&
+      params.code === invite.code
+    ) {
+      return invite;
     }
-  };
-  return params.coordinator === twice(invite.coordinator) &&
-    params.server === twice(invite.mediaProfile.server) &&
-    params.libraryId === invite.mediaProfile.libraryId &&
-    params.code === invite.code
-    ? invite
-    : null;
+  }
+  return olsInviteFromLinkParams(params);
 }
 
 /**

@@ -19,7 +19,7 @@ import { Cover } from './Cover';
 import Icon from './Icon';
 import { useT } from '@/i18n';
 import { useAuthStore } from '@/store/auth';
-import { pauseHere, usePlayerStore } from '@/store/player';
+import { pauseHere, resumeHere, usePlayerStore } from '@/store/player';
 import { colors, fontSize, spacing, themed, tracking } from '@/theme';
 
 /** How many of the list's own songs are drawn from, and how many songs each
@@ -109,7 +109,7 @@ export function SuggestedTracks({
   const resumeMusic = useCallback(() => {
     if (!wasPlayingRef.current) return;
     wasPlayingRef.current = false;
-    if (!usePlayerStore.getState().isPlaying) usePlayerStore.getState().toggle();
+    if (!usePlayerStore.getState().isPlaying) resumeHere();
   }, []);
 
   useEffect(() => {

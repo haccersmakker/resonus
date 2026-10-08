@@ -27,6 +27,11 @@ export interface OlsPlayerHooks {
   status(): void;
   /** Out of the room at once: this device is leaving its profile. */
   quit(): void;
+  /**
+   * The app itself stopped or restarted this phone only, on purpose (the sleep
+   * timer, a preview): unlike `local`, never taken for the player catching up.
+   */
+  here(playing: boolean): void;
 }
 
 let hooks: OlsPlayerHooks | null = null;
@@ -70,4 +75,14 @@ export function olsPlayerStatus(): void {
 /** This device is leaving its profile: out of any room, before the queue goes. */
 export function olsQuit(): void {
   hooks?.quit();
+}
+
+/** The app stopped this phone on purpose, and only this phone: a guest holds. */
+export function olsHoldHere(): void {
+  if (hooks?.role() === 'guest') hooks.here(false);
+}
+
+/** Undoes `olsHoldHere`: a guest follows the room again, playing or not. */
+export function olsResumeHere(): void {
+  if (hooks?.role() === 'guest') hooks.here(true);
 }

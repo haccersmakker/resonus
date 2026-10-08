@@ -152,7 +152,7 @@ export default function ListenTogetherScreen() {
             {linkInvite && linkInvite.code !== room.code ? (
               <Notice icon="alert-circle-outline" text={t('Leave this room to join another one.')} />
             ) : null}
-            {held ? (
+            {held && room.state.isPlaying ? (
               <Notice
                 icon="pause-circle-outline"
                 text={t('Paused on this phone. The room is still playing: press play to catch up.')}

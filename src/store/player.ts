@@ -58,7 +58,9 @@ import { favoriteLabel, favoriteState, onFavoritesChange, toggleFavorite } from 
 import {
   olsGuestControl,
   olsGuestToggle,
+  olsHoldHere,
   olsLocalTransport,
+  olsResumeHere,
   olsPlayerStatus,
   olsQuit,
   olsRole,
@@ -254,7 +256,7 @@ function fireSleepTimer() {
   usePlayerStore.setState({ isPlaying: false, sleepEndsAt: null });
   // A guest falling asleep stops this phone, not the room, and the room's next
   // heartbeat must not start it again.
-  olsLocalTransport(false);
+  olsHoldHere();
 }
 
 // ── Audio engine (expo-audio) ───────────────────────────────────────────────
@@ -2133,7 +2135,7 @@ let fadeState: {
  * track change, seek, pause, reset, remote output…) so the rest of the
  * engine operates as if there were no crossfade.
  */
-function cutCrossfade() {
+function cutCrossfade(keepSleepFade = false) {
   // An in-progress server handoff also uses the reserve player and is also
   // an operation that any intervention (track change, seek, pause,
   // reset…) must abort: goes through here, which is the common path.
@@ -2157,8 +2159,9 @@ function cutCrossfade() {
   // The sleep fade is also an in-progress ramp: if the user touches anything
   // (pause, seek, track change) it must be released, or it would keep lowering
   // the volume of whatever plays now. The expiry still stands and `onStatus`
-  // re-arms it if still within the window.
-  clearSleepFade();
+  // re-arms it if still within the window. A room's own play, pause or seek
+  // is nobody's hand on the controls, and leaves it where it was.
+  if (!keepSleepFade) clearSleepFade();
   const volume = usePlayerStore.getState().volume;
   if (fadingOut) {
     try {
@@ -2170,7 +2173,7 @@ function cutCrossfade() {
     fadingOut = null;
   }
   const p = activePlayer();
-  if (p) p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
+  if (p && !sleepFadeTimer) p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
 }
 
 // ── Seamless server handoff ──────────────────────────────────────────────────
@@ -2778,7 +2781,9 @@ function onStatus(status: AudioStatus, live = false) {
   if (status.playing) {
     // Something is actually coming out of the speaker: from here on this
     // device has an opinion worth sending (see `playedHere`).
-    markPlayedHere();
+    // Not a guest's: the room's queue is the host's word, and leaving the room
+    // must not push it to this account as the one it was listening to.
+    if (olsRole() !== 'guest') markPlayedHere();
     startPeriodicSync();
   } else {
     stopPeriodicSync();
@@ -2815,7 +2820,7 @@ function handleSleepAtSongEnd(): boolean {
   const { sleepAtSongEnd, repeat } = usePlayerStore.getState();
   if (!sleepAtSongEnd) return false;
   usePlayerStore.setState({ isPlaying: false });
-  olsLocalTransport(false);
+  olsHoldHere();
   cutCrossfade();
   activePlayer()?.pause();
   const ni = nextIndex(false);
@@ -2938,6 +2943,9 @@ export function remapQueueIds(f: Remap) {
 function saveQueueLocal(force = false) {
   const key = queueStorageKey();
   if (!key) return;
+  // A guest's own queue and modes stay saved as they were: if the app dies in
+  // a room, it comes back to them, not to a room that is gone.
+  if (olsRole() === 'guest') return;
   const {
     queue,
     index,
@@ -4555,6 +4563,7 @@ export function olsSeekIsLocal(): boolean {
  */
 export async function olsInstall(songs: Song[], index: number): Promise<boolean> {
   attachAppState();
+  clearPlayedHere();
   autoplayFetchedFor = null;
   autoplayRound = null;
   artistFill = null;
@@ -4597,6 +4606,7 @@ export async function olsInstall(songs: Song[], index: number): Promise<boolean>
  * the host added something.
  */
 export function olsAdopt(songs: Song[], index: number): void {
+  clearPlayedHere();
   usePlayerStore.setState({
     queue: songs,
     index,
@@ -4620,11 +4630,11 @@ export function olsAdopt(songs: Song[], index: number): void {
  * guest usually is.
  */
 export function olsSetPlaying(play: boolean): void {
-  cutCrossfade();
+  cutCrossfade(true);
   const p = activePlayer();
   if (p) {
     try {
-      p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
+      if (!sleepFadeTimer) p.volume = effectiveVolume(currentSong(usePlayerStore.getState()));
       if (play) p.play();
       else p.pause();
     } catch {
@@ -4646,7 +4656,19 @@ export function pauseHere(): void {
     return;
   }
   olsSetPlaying(false);
-  olsLocalTransport(false);
+  olsHoldHere();
+}
+
+/**
+ * Puts back what `pauseHere` stopped. A guest rejoins the room as it is now,
+ * which may be stopped: it never asks the host to start everybody again.
+ */
+export function resumeHere(): void {
+  if (olsRole() !== 'guest') {
+    if (!usePlayerStore.getState().isPlaying) usePlayerStore.getState().toggle();
+    return;
+  }
+  olsResumeHere();
 }
 
 /**
@@ -4684,7 +4706,7 @@ export function olsRestoreModes(modes: { shuffle: boolean; repeat: RepeatMode })
 
 /** Seeks where the room says. */
 export function olsSeek(sec: number): void {
-  cutCrossfade();
+  cutCrossfade(true);
   seekActive(Math.max(0, sec));
 }
 

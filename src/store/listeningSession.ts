@@ -31,6 +31,7 @@ import {
   OLS_DRIFT_MS,
   OLS_HEARTBEAT_MS,
   OLS_MAX_NAME_CHARS,
+  OLS_NATURAL_END_WINDOW_MS,
   createOlsInvite,
   isOlsCode,
   isOlsServerSong,
@@ -441,7 +442,12 @@ const host = (() => {
     },
     /** The player moved on its own: a seek from outside the app, a song repeating. */
     checkJump(): void {
-      if (!last || usePlayerStore.getState().isBuffering) return;
+      const { isBuffering, positionSec, durationSec } = usePlayerStore.getState();
+      if (!last || isBuffering) return;
+      // At a song's end the player can already be on the next one while the
+      // store is still on this: that is the song changing, which its own
+      // index change tells. A song repeating shows on the beat after.
+      if (durationSec > 0 && (durationSec - positionSec) * 1000 < OLS_NATURAL_END_WINDOW_MS) return;
       const now = Date.now();
       if (olsPositionJumped(last, livePositionSec() * 1000, now)) this.soon();
     },
@@ -676,7 +682,8 @@ const guest = (() => {
       if (!stillCurrent()) return;
     }
     lastCorrectionAt = Date.now();
-    if (!play) {
+    // Held meanwhile (a sleep timer, a preview): it stays stopped.
+    if (!play || useListeningSession.getState().heldLocally) {
       quiet();
       return;
     }
@@ -778,6 +785,15 @@ const guest = (() => {
     if (plan.queue === 'clear') {
       quiet();
       olsClear();
+      return;
+    }
+    // "Stop at the end of this song", and the room moved on before this phone
+    // heard it end: this is that end, and this phone stops here.
+    if (plan.queue === 'load' && !held && player.isPlaying && player.sleepAtSongEnd) {
+      usePlayerStore.setState({ sleepAtSongEnd: false });
+      quiet();
+      setPlaying(false);
+      useListeningSession.setState({ heldLocally: true });
       return;
     }
     if (plan.queue === 'adopt' || plan.queue === 'load') {
@@ -935,6 +951,18 @@ const guest = (() => {
       quiet();
       setPlaying(play);
     },
+    /** The app stopped this phone on purpose, or put it back (see `olsHoldHere`). */
+    here(playing: boolean): void {
+      clearPending();
+      if (!playing) {
+        if (!useListeningSession.getState().heldLocally) bump('listening · held here');
+        useListeningSession.setState({ heldLocally: true });
+        return;
+      }
+      if (!useListeningSession.getState().heldLocally) return;
+      useListeningSession.setState({ heldLocally: false });
+      void schedule(true);
+    },
     /** The player is between sources for a moment: what it reports is not a person. */
     settle(): void {
       settledAt = Date.now();
@@ -956,7 +984,6 @@ const guest = (() => {
       this.request({ action: usePlayerStore.getState().isPlaying ? 'pause' : 'play' });
     },
     local(playing: boolean): void {
-      if (pending) return;
       const now = Date.now();
       // Inside a quiet spell, what the player says is mostly this module's own
       // doing coming back, or a player between two songs. A stop a while after
@@ -968,6 +995,12 @@ const guest = (() => {
         (playing || !told.play || now - told.at < 1000 || now - settledAt < 2000)
       ) {
         return;
+      }
+      // What this guest asked the room for, arriving: no news. The other way
+      // round is somebody outside the app, and the request is moot.
+      if (pending) {
+        if (playing === pending.play) return;
+        clearPending();
       }
       if (!playing) {
         if (!useListeningSession.getState().heldLocally) {
@@ -1015,12 +1048,14 @@ export function initListeningSessions(): void {
     local: (playing) => guest.local(playing),
     status: () => guest.wake(),
     quit,
+    here: (playing) => guest.here(playing),
   });
   usePlayerStore.subscribe((st, prev) => {
     const r = role();
     // A guest's own song change (reaching the next one by itself) comes with
     // a few statuses from a player in between sources: not somebody pausing.
-    if (r === 'guest' && (st.index !== prev.index || st.queue !== prev.queue)) guest.settle();
+    // The list changing around the same song is no such thing.
+    if (r === 'guest' && currentSong(st)?.id !== currentSong(prev)?.id) guest.settle();
     if (r !== 'host') return;
     if (st.isPlaying !== prev.isPlaying) host.transport(st.isPlaying);
     else host.settleStop();
@@ -1101,7 +1136,7 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
 
   start: async () => {
     if (get().status !== 'idle') return;
-    set({ status: 'starting', error: null });
+    set({ status: 'starting', error: null, lastJoin: null });
     try {
       const auth = requireServer();
       if (!usePlayerStore.getState().queue.every(isOlsServerSong)) throw fail('songs');
@@ -1136,7 +1171,8 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
 
   join: async (target) => {
     if (get().status !== 'idle') return;
-    set({ status: 'joining', error: null });
+    // "Join again" is for the room just lost, never an older one.
+    set({ status: 'joining', error: null, lastJoin: null });
     try {
       const auth = requireServer();
       const candidates = serverCandidates(auth);
@@ -1208,7 +1244,7 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
     const s = session;
     const r = role();
     if (!s || !r || get().status !== 'connected') return;
-    set({ status: 'leaving' });
+    set({ status: 'leaving', lastJoin: null });
     try {
       await s.connection.request(r === 'host' ? 'end' : 'leave');
     } catch {

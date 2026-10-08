@@ -229,6 +229,15 @@ describe('Invites', () => {
     assert.equal(olsInviteFromRoute(routed, null), null);
     assert.equal(olsInviteFromRoute(routed, olsInviteLink(invite)), null);
     assert.equal(olsInviteFromRoute({}, link), null);
+    // Decoded twice into another address that still reads as one: the link wins.
+    const tilde = 'https://music.example/%7Ealice';
+    const inv2 = createOlsInvite('https://sessions.example', tilde, sha(tilde), 'ABC234')!;
+    const link2 = olsInviteLink(inv2);
+    const routed2 = Object.fromEntries(
+      [...new URL(link2.replace('resonus:', 'https:')).searchParams].map(([k, v]) => [k, decodeURIComponent(v)]),
+    );
+    assert.equal(routed2.server, 'https://music.example/~alice');
+    assert.deepEqual(olsInviteFromRoute(routed2, link2), inv2);
     // Values that make an invite as they are need no link.
     const plain = Object.fromEntries(new URL(olsInviteLink(invite).replace('resonus:', 'https:')).searchParams);
     assert.deepEqual(olsInviteFromRoute(plain, null), invite);

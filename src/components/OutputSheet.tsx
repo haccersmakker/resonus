@@ -21,13 +21,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useBottomSheetAnim } from '@/hooks/useBottomSheetAnim';
 import { useT } from '@/i18n';
 import { formatGroupedDeviceLabel, normalizeOutputDisplayName } from '@/lib/format';
-import { olsRole } from '@/lib/listeningSessionBridge';
 import {
   jukeboxConnect,
   jukeboxDisconnect,
   refreshJukeboxAvailability,
   useJukebox,
 } from '@/store/jukebox';
+import { useListeningSession } from '@/store/listeningSession';
 import { useToast } from '@/store/toast';
 import {
   upnpAvailable,
@@ -213,7 +213,8 @@ export function OutputSheet({ visible, onClose }: { visible: boolean; onClose: (
    * out of step for everybody, or the host's room along with it.
    */
   function blockedByRoom(): boolean {
-    if (!olsRole()) return false;
+    // Opening or joining counts too: the room checks for a cast only once.
+    if (useListeningSession.getState().status === 'idle') return false;
     toast(t('Stop listening together before casting.'));
     return true;
   }

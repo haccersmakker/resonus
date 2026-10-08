@@ -38,6 +38,7 @@ import { songsLabel, useT } from '@/i18n';
 import { formatTotalDuration } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { listPerf } from '@/lib/listPerf';
+import { pushOrReplace } from '@/lib/pushOrReplace';
 import { useAuthStore } from '@/store/auth';
 import { useListeningSession, useListeningRole } from '@/store/listeningSession';
 import {
@@ -182,6 +183,7 @@ export default function QueueScreen() {
   // The server's copy is only there for an account with a connection: a local
   // profile has no server, and offline there is nobody to ask.
   const online = useAuthStore((s) => !!s.auth && !s.offline);
+  const subsonic = useAuthStore((s) => s.auth?.serverType !== 'jellyfin');
   // A guest's queue is the host's: tapping a song asks the host to play it,
   // and nothing here moves, removes or replaces anything.
   const listening = useListeningRole();
@@ -369,7 +371,7 @@ export default function QueueScreen() {
         <Pressable
           accessibilityRole="button"
           style={({ pressed }) => [styles.room, { marginHorizontal: listPad }, pressed && { opacity: 0.6 }]}
-          onPress={() => router.push('/listen-together')}
+          onPress={() => pushOrReplace('/listen-together', 'queue')}
         >
           <Icon name="headset-outline" size={20} color={accent} />
           <Text style={styles.roomText} numberOfLines={2}>
@@ -462,12 +464,12 @@ export default function QueueScreen() {
               <Icon name="add" size={24} color={colors.text} />
               <Text style={styles.actionText}>{t('Add to a playlist')}</Text>
             </Pressable>
-            {online ? (
+            {online && subsonic ? (
               <Pressable
                 style={({ pressed }) => [styles.action, pressed && { opacity: 0.6 }]}
                 onPress={() => {
                   close();
-                  router.push('/listen-together');
+                  pushOrReplace('/listen-together', 'queue');
                 }}
               >
                 <Icon name="headset-outline" size={24} color={colors.text} />
