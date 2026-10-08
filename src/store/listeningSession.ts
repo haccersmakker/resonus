@@ -335,8 +335,10 @@ async function onMessage(connection: OlsConnection, m: OlsServerMessage): Promis
 
 const host = (() => {
   let last: { at: number; positionMs: number; isPlaying: boolean } | null = null;
-  /** Where the published window starts in the queue (see `window`). */
+  /** Where the published window starts in the queue (see `olsQueueWindow`). */
   let offset = 0;
+  /** When it last moved: a guest's tap from before then was on another window. */
+  let offsetMovedAt = 0;
   let queued = false;
   /**
    * When the host's player last said it stopped, if that has not been told
@@ -353,6 +355,7 @@ const host = (() => {
     const ids = st.queue.map((x) => x.id);
     const index = Math.min(st.index, Math.max(0, ids.length - 1));
     const w = olsQueueWindow(ids, index, s.stateBytes, offset);
+    if (w.start !== offset) offsetMovedAt = Date.now();
     offset = w.start;
     return {
       songIds: w.ids,
@@ -473,7 +476,9 @@ const host = (() => {
           player.seekTo(control.positionMs / 1000);
           break;
         case 'jump':
-          player.jumpTo(control.index + offset);
+          // A tap on the window before it moved would land on another song;
+          // the guest sees the new one and taps again.
+          if (Date.now() - offsetMovedAt >= 2000) player.jumpTo(control.index + offset);
           break;
       }
       // A stop asked for is no transient: told now, with nothing to settle.
@@ -486,9 +491,18 @@ const host = (() => {
       // that asked is waiting on a new revision to know it was heard.
       this.soon();
     },
+    /** Going to the background: a stop waiting to settle is told now, as no timer will. */
+    flushStop(): void {
+      if (!stoppedAt || usePlayerStore.getState().isPlaying) return;
+      stoppedAt = 0;
+      if (stoppedTimer) clearTimeout(stoppedTimer);
+      stoppedTimer = null;
+      publish();
+    },
     reset(): void {
       last = null;
       offset = 0;
+      offsetMovedAt = 0;
       stoppedAt = 0;
       if (stoppedTimer) clearTimeout(stoppedTimer);
       stoppedTimer = null;
@@ -1075,7 +1089,11 @@ export function initListeningSessions(): void {
     if (session && !profileCurrent(session)) quit();
   });
   AppState.addEventListener('change', (state) => {
-    if (state !== 'active' || !session) return;
+    if (state !== 'active') {
+      if (role() === 'host') host.flushStop();
+      return;
+    }
+    if (!session) return;
     // Whatever was missed in the background is behind us: one look at the
     // room as it is now.
     session.connection.ping();
@@ -1163,7 +1181,7 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
       });
     } catch (e) {
       // Ended on purpose while it opened (a profile change): already done with.
-      if (e instanceof OlsConnectionError && e.code === 'closed') return;
+      if (get().status === 'idle') return;
       bump('listening · start failed');
       finish(messageFor(e));
     }
@@ -1234,7 +1252,7 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
         stateBytes: caps.limits.stateBytes,
       });
     } catch (e) {
-      if (e instanceof OlsConnectionError && e.code === 'closed') return;
+      if (get().status === 'idle') return;
       bump('listening · join failed');
       finish(messageFor(e));
     }
