@@ -59,6 +59,8 @@ import {
   olsGuestControl,
   olsGuestToggle,
   olsLocalTransport,
+  olsPlayerStatus,
+  olsQuit,
   olsRole,
 } from '@/lib/listeningSessionBridge';
 import { isOlsServerSong } from '@/lib/listeningSessions';
@@ -2698,6 +2700,9 @@ function onStatus(status: AudioStatus, live = false) {
     !prev.isBuffering &&
     !pendingSeek &&
     !fadeState;
+  // After this one is handled, whatever it is: a waiting guest reads the
+  // player itself, and its pending seek is cleared below.
+  void Promise.resolve().then(olsPlayerStatus);
   if (routine && !live && now - lastStatusAt < BACKLOG_GAP_MS) {
     bump('player · piled-up beat dropped');
     return;
@@ -3966,12 +3971,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     // At the start of the queue: return to the previous context from history.
     // Entries of this same list point further into it, left there by the
-    // advances the steps above walked back over.
+    // advances the steps above walked back over. Not in a room: what was
+    // played before it is not the room's to go back to.
     const { queue, source, sourceHref } = get();
     const key = contextKey(source, sourceHref);
     const sameList = (e: HistoryEntry) =>
       e.queue === queue || (key != null && contextKey(e.source, e.sourceHref) === key);
-    let entry = playedHistory.pop();
+    let entry = olsRole() ? undefined : playedHistory.pop();
     while (entry && sameList(entry)) entry = playedHistory.pop();
     if (entry) {
       set({
@@ -4423,6 +4429,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   reset: async (forProfile = false) => {
+    // Out of a room before its queue goes: emptied first, the queue would
+    // reach the room as the host's, and empty every guest's.
+    if (forProfile) olsQuit();
     get().cancelSleepTimer();
     clearPlayedHere();
     autoplayFetchedFor = null;
@@ -4570,6 +4579,13 @@ export async function olsInstall(songs: Song[], index: number): Promise<boolean>
     radioMode: false,
     radioSeed: null,
   });
+  // A player that was playing starts whatever it is handed next, from its
+  // first second: paused first, it stays paused.
+  try {
+    activePlayer()?.pause();
+  } catch {
+    // None yet, or one being replaced.
+  }
   if (!(await loadIndex(index, false))) return false;
   return usePlayerStore.getState().queue === songs;
 }

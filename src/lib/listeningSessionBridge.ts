@@ -23,6 +23,10 @@ export interface OlsPlayerHooks {
    * playback, never the room's.
    */
   local(playing: boolean): void;
+  /** The player reported a status, kept or not. */
+  status(): void;
+  /** Out of the room at once: this device is leaving its profile. */
+  quit(): void;
 }
 
 let hooks: OlsPlayerHooks | null = null;
@@ -52,4 +56,18 @@ export function olsGuestToggle(): boolean {
 /** Tells the room this device paused or played without being asked to by it. */
 export function olsLocalTransport(playing: boolean): void {
   if (hooks?.role() === 'guest') hooks.local(playing);
+}
+
+/**
+ * Every status the player reports, including the ones it drops as routine: a
+ * guest waiting for its player to be ready is woken by them, since timers do
+ * not run with the screen off and a dropped status writes nothing to wake it.
+ */
+export function olsPlayerStatus(): void {
+  if (hooks?.role() === 'guest') hooks.status();
+}
+
+/** This device is leaving its profile: out of any room, before the queue goes. */
+export function olsQuit(): void {
+  hooks?.quit();
 }

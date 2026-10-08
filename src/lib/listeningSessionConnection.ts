@@ -24,6 +24,7 @@ import {
   parseOlsServerFrame,
   type OlsAccess,
   type OlsClientMessage,
+  type OlsPlaybackState,
   type OlsRoom,
   type OlsServerMessage,
 } from './listeningSessions';
@@ -61,6 +62,8 @@ export interface OlsConnectionEvents {
   onClockReady?(): void | Promise<void>;
   /** Every heartbeat, after the clock is asked. */
   onHeartbeat?(): void;
+  /** A state came in, before it waits its turn behind the one being handled. */
+  onArrival?(): void;
   /** The connection ended by itself. Not called after `close()`. */
   onClose(reason: OlsCloseReason): void;
   /** Something thrown while handling a message. The room carries on. */
@@ -79,6 +82,8 @@ export class OlsConnection {
   readonly clock = new OlsClock();
   /** The newest revision seen on the wire, handled or not. */
   latestRevision = -1;
+  /** The state of that revision. */
+  newestState: OlsPlaybackState | null = null;
   private socket: OlsSocket | null = null;
   private authenticated = false;
   private closedByUs = false;
@@ -89,6 +94,8 @@ export class OlsConnection {
   private clockFallback: ReturnType<typeof setTimeout> | null = null;
   private clockAnnounced = false;
   private lastPingAt = 0;
+  /** Fails an `open()` still waiting to be let in. */
+  private abortOpen: ((e: OlsConnectionError) => void) | null = null;
   private lifecycle: {
     requestId: string;
     resolve: () => void;
@@ -136,9 +143,11 @@ export class OlsConnection {
         if (settled) return;
         settled = true;
         clearTimeout(authTimer);
+        this.abortOpen = null;
         this.teardown(true);
         reject(e);
       };
+      this.abortOpen = fail;
       const authTimer = setTimeout(
         () => fail(new OlsConnectionError('timeout', 'The coordinator did not let this client in')),
         this.options.authTimeoutMs ?? 10_000,
@@ -215,10 +224,12 @@ export class OlsConnection {
           }
           this.authenticated = true;
           this.latestRevision = message.room.state.revision;
+          this.newestState = message.room.state;
           this.enqueue(async () => {
             await this.events.onMessage(message);
             if (settled) return;
             settled = true;
+            this.abortOpen = null;
             clearTimeout(authTimer);
             resolve(message.room);
           });
@@ -250,6 +261,8 @@ export class OlsConnection {
       case 'state':
         if (message.state.revision <= this.latestRevision) return;
         this.latestRevision = message.state.revision;
+        this.newestState = message.state;
+        this.events.onArrival?.();
         this.pendingState = message;
         if (this.stateQueued) return;
         this.stateQueued = true;
@@ -356,6 +369,9 @@ export class OlsConnection {
   /** Hangs up without telling anybody. Nothing else is handled after this. */
   close(): void {
     this.closedByUs = true;
+    // Not left to time out: whoever is waiting on it hears at once, as
+    // `closed`, that it was ended on purpose.
+    this.abortOpen?.(new OlsConnectionError('closed', 'Closed before it opened'));
     this.teardown(true);
   }
 

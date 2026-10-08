@@ -26,6 +26,7 @@ import {
   olsInviteFromRoute,
   olsInviteLink,
   olsPositionJumped,
+  olsQueueWindow,
   olsStateIsDiscontinuous,
   parseOlsInviteText,
   parseOlsServerFrame,
@@ -75,6 +76,58 @@ describe('Addresses', () => {
       '',
     ]) {
       assert.equal(normalizeOlsServerUrl(bad), null, bad);
+    }
+  });
+
+  it('takes only the spelling a WHATWG URL keeps, and refuses one it would rewrite', () => {
+    const whatwg = (input: string) => {
+      const u = new URL(input);
+      return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`;
+    };
+    for (const ok of [
+      'http://[2001:db8::1]:4533',
+      'HTTP://[2001:DB8::1]',
+      'http://[::ffff:0:1]',
+      'http://[1:0:0:2::3]',
+      'http://[1::2:0:0:3:0]',
+      'http://my_nas.lan:4533',
+      'http://10.0.0.1',
+      'http://255.255.255.255/music',
+    ]) {
+      assert.equal(normalizeOlsServerUrl(ok), whatwg(ok), ok);
+    }
+    for (const bad of [
+      'https://[a]evil.com',
+      'https://[x]music.example',
+      'http://[0:0:0:0:0:0:0:1]:4533',
+      'http://[2001:db8::0001]',
+      'http://[1:0:0:2:0:0:3::]',
+      'http://[1:0:0:2:0:0:0:3]',
+      'http://[::1::2]',
+      'http://[::ffff:127.0.0.1]',
+      'http://127.1',
+      'http://0x7f.0.0.1',
+      'http://010.0.0.1',
+      'http://1.2.3.999',
+      'http://foo.123',
+      'https://music.example/a/%2e%2e/b',
+      'https://music.example/a/.%2E/b',
+      'https://music.example/%2e',
+    ]) {
+      assert.equal(normalizeOlsServerUrl(bad), null, bad);
+    }
+    // Every IPv6 spelling: refused, or exactly what a URL makes of it; and
+    // what a URL makes of it is always taken.
+    let seed = 7;
+    const rand = (n: number) => (seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31) % n;
+    for (let k = 0; k < 2000; k++) {
+      const groups = Array.from({ length: 8 }, () => (rand(3) === 0 ? '0' : rand(65_536).toString(16)));
+      let text = groups.map((g) => (rand(4) === 0 ? g.padStart(4, '0') : g)).join(':');
+      if (rand(2)) text = text.replace(/(^|:)0(:0)+(:|$)/, '::');
+      const input = `http://[${text}]`;
+      const ours = normalizeOlsServerUrl(input);
+      if (ours !== null) assert.equal(ours, whatwg(input), input);
+      assert.equal(normalizeOlsServerUrl(whatwg(input)), whatwg(input), input);
     }
   });
 
@@ -188,6 +241,35 @@ describe('What may be shared with a room', () => {
     assert.equal(isOlsServerSong({ id: 'radio-1', url: 'https://stream.example' }), false);
     assert.equal(isOlsServerSong({ id: 'local:content://x' }), false);
     assert.equal(isOlsServerSong({ id: '' }), false);
+  });
+});
+
+describe('A long queue', () => {
+  const ids = Array.from({ length: 6000 }, (_, i) => `song-${i}`);
+
+  it('is sent whole while it fits', () => {
+    assert.deepEqual(olsQueueWindow(['a', 'b'], 1, 65_536, 0), { ids: ['a', 'b'], start: 0 });
+  });
+
+  it('is sent as a window holding the song playing, which stays put as songs go by', () => {
+    let start = 0;
+    let moves = 0;
+    for (let i = 0; i < ids.length; i += 7) {
+      const w = olsQueueWindow(ids, i, 1 << 20, start);
+      assert.equal(w.ids.length, 5000);
+      assert.equal(w.ids[i - w.start], `song-${i}`);
+      if (w.start !== start) moves++;
+      start = w.start;
+    }
+    // A window that followed every song would have moved hundreds of times.
+    assert.ok(moves <= 2, `moved ${moves} times`);
+  });
+
+  it('is halved until it fits what the coordinator takes', () => {
+    const w = olsQueueWindow(ids, 3000, 30_000, 0);
+    assert.equal(w.ids.length, 1250);
+    assert.equal(w.ids[3000 - w.start], 'song-3000');
+    assert.ok(JSON.stringify(w.ids).length < 30_000);
   });
 });
 
@@ -449,13 +531,13 @@ const hostState = (ids: string[], index = 0, positionMs = 0, isPlaying = true) =
 });
 
 /** A socket that answers the ticket with whatever `reply` says, and nothing else. */
-function fakeSocket(reply: (sent: string) => string): (url: string) => OlsSocket {
+function fakeSocket(reply: (sent: string) => string | null): (url: string) => OlsSocket {
   return () => {
     const s: OlsSocket & { readyState: number } = {
       readyState: 0,
       send(data: string) {
         const out = reply(data);
-        setTimeout(() => s.onmessage?.({ data: out }), 0);
+        if (out !== null) setTimeout(() => s.onmessage?.({ data: out }), 0);
       },
       close() {
         s.readyState = 3;
@@ -489,6 +571,13 @@ describe('A coordinator that changes its story', () => {
     const c = new OlsConnection(access, 'https://sessions.example', lie({}), events);
     assert.equal((await c.open()).role, 'guest');
     c.close();
+  });
+
+  it('a connection closed while it waits to be let in says so at once', async () => {
+    const c = new OlsConnection(access, 'https://sessions.example', fakeSocket(() => null), events);
+    const opening = c.open();
+    c.close();
+    await assert.rejects(opening, (e: unknown) => e instanceof OlsConnectionError && e.code === 'closed');
   });
 
   for (const [name, patch] of [
@@ -584,6 +673,9 @@ describe('A room, end to end', () => {
     assert.deepEqual([...handled].sort((a, b) => a - b), handled, 'in order');
     const last = g.messages.filter((m) => m.type === 'state').pop();
     assert.ok(last?.type === 'state' && last.state.songIds[0] === 's19');
+    // What came in last, handled or not, for a guest to tell a seek gone stale.
+    assert.equal(g.conn.newestState?.revision, g.conn.latestRevision);
+    assert.equal(g.conn.newestState?.songIds[0], 's19');
     h.conn.close();
     g.conn.close();
   });

@@ -5,6 +5,7 @@
  * of its address.
  */
 import * as Crypto from 'expo-crypto';
+import { fetch } from 'expo/fetch';
 
 import { OlsConnectionError } from '@/lib/listeningSessionConnection';
 import {
@@ -22,12 +23,35 @@ import {
 
 const TIMEOUT_MS = 15_000;
 
+/**
+ * The body as text, read no further than an answer can be long: a body with no
+ * length given would otherwise be held whole, however big, before the check.
+ */
+async function boundedText(
+  res: { body: ReadableStream<Uint8Array> | null; text(): Promise<string> },
+  ctrl: AbortController,
+): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return res.text();
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    text += decoder.decode(value, { stream: true });
+    if (text.length > OLS_MAX_MESSAGE_CHARS) {
+      ctrl.abort();
+      throw new OlsConnectionError('invalid', 'Too large');
+    }
+  }
+}
+
 async function call(coordinatorUrl: string, path: string, body?: object): Promise<unknown> {
   const base = normalizeOlsCoordinatorUrl(coordinatorUrl);
   if (!base) throw new OlsConnectionError('address', 'Not a coordinator address');
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  let res: Response;
+  let res: Awaited<ReturnType<typeof fetch>>;
   let text: string;
   try {
     res = await fetch(`${base}${path}`, {
@@ -42,7 +66,7 @@ async function call(coordinatorUrl: string, path: string, body?: object): Promis
     });
     const length = Number(res.headers.get('content-length') ?? 0);
     if (length > OLS_MAX_MESSAGE_CHARS) throw new OlsConnectionError('invalid', 'Too large');
-    text = await res.text();
+    text = await boundedText(res, ctrl);
   } catch (e) {
     if (e instanceof OlsConnectionError) throw e;
     throw ctrl.signal.aborted
@@ -70,8 +94,15 @@ export async function getOlsCapabilities(coordinatorUrl: string): Promise<OlsCap
     payload = await call(coordinatorUrl, '/v1/capabilities');
   } catch (e) {
     // Something answered, and not as a coordinator: a music server's address
-    // typed in here, most likely. That is not a missing room.
-    if (e instanceof OlsConnectionError && (e.code.startsWith('http_') || e.code === 'invalid')) {
+    // typed in here, most likely. That is not a missing room. A server that
+    // is busy or down, though, is said to be.
+    if (e instanceof OlsConnectionError && /^http_5\d\d$/.test(e.code)) {
+      throw new OlsConnectionError('unreachable', 'The coordinator is not answering');
+    }
+    if (
+      e instanceof OlsConnectionError &&
+      ((e.code.startsWith('http_') && e.code !== 'http_429') || e.code === 'invalid')
+    ) {
       throw new OlsConnectionError('unsupported', 'Not an OLS v1 coordinator');
     }
     throw e;

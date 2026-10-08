@@ -31,7 +31,6 @@ import {
   OLS_DRIFT_MS,
   OLS_HEARTBEAT_MS,
   OLS_MAX_NAME_CHARS,
-  OLS_MAX_SONGS,
   createOlsInvite,
   isOlsCode,
   isOlsServerSong,
@@ -40,6 +39,7 @@ import {
   normalizeOlsServerUrl,
   olsInviteLink,
   olsPositionJumped,
+  olsQueueWindow,
   olsRequestId,
   olsStateIsDiscontinuous,
   planOlsGuest,
@@ -229,6 +229,28 @@ function finish(error: string | null): void {
   guestModes = null;
 }
 
+/** Whether the room's profile is still the one in use, and online. */
+function profileCurrent(s: Session): boolean {
+  const { auth, offline } = useAuthStore.getState();
+  return !offline && profileOf(auth) === s.profile;
+}
+
+/**
+ * Out of the room at once: another profile is another library, and offline
+ * there is no server to read the room's songs from. Said on the way out, not
+ * waited on.
+ */
+function quit(): void {
+  const s = session;
+  if (!s) return;
+  s.connection.send({
+    type: role() === 'host' ? 'session.end' : 'session.leave',
+    protocolVersion: 1,
+    requestId: olsRequestId(),
+  });
+  finish(null);
+}
+
 async function connect(access: OlsAccess, ctx: Omit<Session, 'connection'>): Promise<void> {
   const connection: OlsConnection = new OlsConnection(access, ctx.coordinatorUrl, socketFactory, {
     onMessage: (m): Promise<void> => onMessage(connection, m),
@@ -239,6 +261,9 @@ async function connect(access: OlsAccess, ctx: Omit<Session, 'connection'>): Pro
     },
     onHeartbeat: () => {
       if (session?.connection === connection && role() === 'host') host.publishIfDue();
+    },
+    onArrival: () => {
+      if (session?.connection === connection) guest.wake();
     },
     onClose: (reason) => {
       if (session?.connection !== connection) return;
@@ -261,6 +286,11 @@ async function onMessage(connection: OlsConnection, m: OlsServerMessage): Promis
     case 'authenticated':
       useListeningSession.setState({ status: 'connected', room: m.room, error: null });
       bump(`listening · in as ${m.room.role}`);
+      // A profile change while the room was opening found no room to leave.
+      if (!profileCurrent(session)) {
+        quit();
+        return;
+      }
       if (m.room.role === 'host') {
         // The room is opened empty, and it is the host's queue from now on.
         host.publish();
@@ -317,34 +347,19 @@ const host = (() => {
   let stoppedTimer: ReturnType<typeof setTimeout> | null = null;
   const STOP_SETTLE_MS = 450;
 
-  /**
-   * The queue as the room gets it. All of it, unless it is longer than a room
-   * holds: then a window around the song playing, with more ahead than behind.
-   */
-  function window(ids: string[], index: number, maxBytes: number): { ids: string[]; start: number } {
-    let size = Math.min(ids.length, OLS_MAX_SONGS);
-    for (;;) {
-      const start = Math.max(0, Math.min(index - Math.floor(size / 4), ids.length - size));
-      const slice = ids.slice(start, start + size);
-      // Each id costs its length and three characters of JSON around it; the
-      // rest of the message is well inside the margin.
-      const bytes = slice.reduce((n, id) => n + id.length + 3, 256);
-      if (size <= 1 || bytes <= maxBytes) return { ids: slice, start };
-      size = Math.floor(size / 2);
-    }
-  }
-
   function state(s: Session): OlsHostState {
     const st = usePlayerStore.getState();
     const ids = st.queue.map((x) => x.id);
     const index = Math.min(st.index, Math.max(0, ids.length - 1));
-    const w = window(ids, index, s.stateBytes);
+    const w = olsQueueWindow(ids, index, s.stateBytes, offset);
     offset = w.start;
     return {
       songIds: w.ids,
       currentIndex: w.ids.length === 0 ? 0 : index - w.start,
       positionMs: Math.max(0, Math.round(livePositionSec() * 1000)),
-      isPlaying: st.isPlaying || stoppedAt > 0,
+      // A stop not yet settled is not told; one that has is, whether or not
+      // its timer has run (it does not, with the screen off).
+      isPlaying: st.isPlaying || (stoppedAt > 0 && Date.now() - stoppedAt < STOP_SETTLE_MS),
     };
   }
 
@@ -407,9 +422,14 @@ const host = (() => {
         this.soon();
         return;
       }
+      // With the screen off neither this timer nor a paused player's statuses
+      // come: a stop there is told at once, settled or not.
+      if (AppState.currentState !== 'active') {
+        stoppedAt = 0;
+        this.soon();
+        return;
+      }
       stoppedAt = Date.now();
-      // The status beats tell it too (`settleStop`), with the screen off where
-      // this timer may not run.
       stoppedTimer = setTimeout(() => this.settleStop(), STOP_SETTLE_MS);
     },
     /** A stop that has lasted is told to the room. */
@@ -480,9 +500,18 @@ const guest = (() => {
   let lastCorrectionAt = 0;
   /** Until when what the player reports is this store's own doing. */
   let quietUntil = 0;
-  /** A play or pause this guest asked for and has not seen answered. */
-  let pending: { requestId: string; afterRevision: number; timer: ReturnType<typeof setTimeout> } | null =
-    null;
+  /**
+   * A play or pause this guest asked for and has not seen the room take up.
+   * Only a state that does is the answer: a heartbeat the host sent before the
+   * request reached it is newer, and still says the opposite.
+   */
+  let pending: {
+    requestId: string;
+    play: boolean;
+    afterRevision: number;
+    deadline: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   let chain: Promise<void> = Promise.resolve();
   let queued = false;
   let forceNext = false;
@@ -500,6 +529,18 @@ const guest = (() => {
   const quiet = (ms = 2000) => {
     quietUntil = Date.now() + ms;
   };
+  /** What this module last told the player, and when. */
+  let told = { play: false, at: 0 };
+  /** When the player last changed source. */
+  let settledAt = 0;
+  const setPlaying = (play: boolean) => {
+    told = { play, at: Date.now() };
+    olsSetPlaying(play);
+  };
+  /** Wakes whatever `waitFor` is waiting: a player status or a state came in. */
+  const wakers = new Set<() => void>();
+  /** The background run of `fillIn`, one at a time. */
+  let filling: Promise<void> | null = null;
 
   /**
    * How long this phone's player takes from being told to play to sounding,
@@ -562,6 +603,21 @@ const guest = (() => {
     await Promise.all(Array.from({ length: Math.min(6, todo.length) }, worker));
   }
 
+  /**
+   * Looks up the rest of the room's songs in the background, one run at a
+   * time however many states ask for it, and applies the newest state again
+   * when that found anything.
+   */
+  function fillIn(s: Session, ids: string[]): void {
+    if (filling) return;
+    const had = songs.size;
+    const run: Promise<void> = lookupAll(s, ids).then(() => {
+      if (filling === run) filling = null;
+      if (session === s && songs.size > had) void schedule(false);
+    });
+    filling = run;
+  }
+
   /** The room's queue as songs; what is not known yet stands in as unavailable. */
   function queueOf(ids: string[]): Song[] {
     return ids.map(
@@ -570,9 +626,9 @@ const guest = (() => {
   }
 
   /**
-   * Waits until `ok`, or gives up. Checked on the player's status beats rather
-   * than on a timer alone: those keep coming with the screen off, and timers
-   * do not.
+   * Waits until `ok`, or gives up. Checked on the player's statuses and the
+   * room's states rather than on a timer alone: those keep coming with the
+   * screen off, and timers do not.
    */
   function waitFor(stillCurrent: () => boolean, ok: () => boolean, ms: number): Promise<void> {
     const until = Date.now() + ms;
@@ -580,17 +636,18 @@ const guest = (() => {
     if (done()) return Promise.resolve();
     return new Promise((resolve) => {
       let timer: ReturnType<typeof setInterval> | null = null;
+      const check = () => {
+        if (done()) finish();
+      };
       const finish = () => {
         unsub();
+        wakers.delete(check);
         if (timer) clearInterval(timer);
         resolve();
       };
-      const unsub = usePlayerStore.subscribe(() => {
-        if (done()) finish();
-      });
-      timer = setInterval(() => {
-        if (done()) finish();
-      }, 50);
+      const unsub = usePlayerStore.subscribe(check);
+      wakers.add(check);
+      timer = setInterval(check, 50);
     });
   }
 
@@ -605,7 +662,9 @@ const guest = (() => {
     const play = state.isPlaying && !useListeningSession.getState().heldLocally;
     const aim = () => projectOlsPosition(state, serverNow()) + (play ? leadMs : 0);
     quiet(8000);
-    if (usePlayerStore.getState().isPlaying) olsSetPlaying(false);
+    // Whatever the store says: a player handed a new source while playing
+    // plays it, and the store has it down as paused.
+    setPlaying(false);
     olsSeek(aim() / 1000);
     await ready(stillCurrent, 4000);
     if (!stillCurrent()) return;
@@ -621,26 +680,32 @@ const guest = (() => {
       quiet();
       return;
     }
-    olsSetPlaying(true);
+    setPlaying(true);
     // Measured once it has been sounding for a beat, when the position it
-    // reports is the one coming out. Against the newest state rather than
-    // this one, since a heartbeat may well arrive in that beat, and only while
-    // the room is still on this song: the measure is of this player, not of
-    // anything the host did meanwhile.
+    // reports is the one coming out. Against the newest state on the wire
+    // rather than this one, since a heartbeat may well arrive in that beat,
+    // and only while the room is still on this song: the measure is of this
+    // player, not of anything the host did meanwhile.
     const s = session;
     const songId = state.songIds[state.currentIndex];
-    const same = () =>
-      session === s &&
-      role() === 'guest' &&
-      !!latest &&
-      latest.isPlaying &&
-      latest.songIds[latest.currentIndex] === songId &&
-      currentSong(usePlayerStore.getState())?.id === songId;
+    const newest = () => s?.connection.newestState ?? null;
+    const same = () => {
+      const n = newest();
+      return (
+        session === s &&
+        role() === 'guest' &&
+        !!n &&
+        n.isPlaying &&
+        n.songIds[n.currentIndex] === songId &&
+        currentSong(usePlayerStore.getState())?.id === songId
+      );
+    };
     const started = Date.now();
     await waitFor(same, () => Date.now() - started >= 700 && olsPlayerReady(), 3000);
     quiet();
-    if (!same() || !latest || !usePlayerStore.getState().isPlaying) return;
-    const late = projectOlsPosition(latest, serverNow()) - livePositionSec() * 1000;
+    const now = newest();
+    if (!same() || !now || !usePlayerStore.getState().isPlaying) return;
+    const late = projectOlsPosition(now, serverNow()) - livePositionSec() * 1000;
     if (!Number.isFinite(late) || Math.abs(late) > 2000) return;
     leadMs = Math.min(1500, Math.max(0, leadMs + late));
     note(`listening · started ${Math.round(late)} ms late, aiming ${Math.round(leadMs)} ms ahead`);
@@ -648,7 +713,7 @@ const guest = (() => {
     // left that far off for as long as it stays under the drift limit.
     if (!calibrated && Math.abs(late) > 50 && olsSeekIsLocal()) {
       calibrated = true;
-      await align(latest, same);
+      await align(now, same);
     }
     calibrated = true;
   }
@@ -657,20 +722,43 @@ const guest = (() => {
     const s = session;
     const state = latest;
     if (!s || !state || !clockReady || role() !== 'guest') return;
-    const stillCurrent = () =>
-      session === s && latest === state && role() === 'guest' && s.connection.latestRevision <= state.revision;
-    const held = useListeningSession.getState().heldLocally;
+    // A newer state that only says the room plays on is no reason to drop a
+    // seek half done: with one every three seconds, a player slower than that
+    // to get ready would be sent somewhere new for ever.
+    const stillCurrent = () => {
+      const newest = s.connection.newestState;
+      return (
+        session === s &&
+        latest === state &&
+        role() === 'guest' &&
+        !(newest && newest.revision > state.revision && olsStateIsDiscontinuous(state, newest))
+      );
+    };
+    let held = useListeningSession.getState().heldLocally;
     const player = usePlayerStore.getState();
+    // Held, and playing all the same: started from outside the app at a moment
+    // its report of that was not heard (a song change, the player's first
+    // second). It is listening again, so it is caught up.
+    if (held && player.isPlaying) {
+      useListeningSession.setState({ heldLocally: false });
+      held = false;
+      lastCorrectionAt = 0;
+    }
+    const hostId = state.songIds[state.currentIndex];
+    const current = currentSong(player);
     const local = {
-      // A stand-in is not the song, whatever its id says.
-      songIds: player.queue.map((x) => (x.unavailable ? '' : x.id)),
+      // A stand-in playing is not the song, whatever its id says. Further down
+      // the queue it is, so that a song this account lacks does not make every
+      // state look like a new queue.
+      songIds: player.queue.map((x, i) => (x.unavailable && i === player.index ? '' : x.id)),
       index: player.index,
       isPlaying: player.isPlaying,
       isBuffering: player.isBuffering,
       positionMs: livePositionSec() * 1000,
-      hostSongDurationMs: (player.queue[state.currentIndex]?.duration ?? 0) * 1000,
+      hostSongDurationMs:
+        ((current?.id === hostId ? current.duration : songs.get(hostId)?.duration) ?? 0) * 1000,
     };
-    const awaitingTransport = !!pending && state.revision <= pending.afterRevision;
+    const awaitingTransport = !!pending;
     const plan = planOlsGuest(state, local, {
       serverNow: serverNow(),
       discontinuous: force || olsStateIsDiscontinuous(applied, state),
@@ -713,7 +801,7 @@ const guest = (() => {
         // without this phone for now; a later state tries again.
         if (usePlayerStore.getState().isPlaying) {
           quiet();
-          olsSetPlaying(false);
+          setPlaying(false);
         }
         const error = lookupFailed
           ? 'Couldn’t load the room’s songs from your server. Trying again…'
@@ -734,20 +822,21 @@ const guest = (() => {
       }
       if (useListeningSession.getState().error) useListeningSession.setState({ error: null });
       // The rest in the background; the queue is swapped again when it is in.
-      if (list.some((x) => x.unavailable)) {
-        const had = songs.size;
-        void lookupAll(s, state.songIds).then(() => {
-          if (session === s && songs.size > had) void schedule(false);
-        });
-      }
+      if (list.some((x) => x.unavailable)) fillIn(s, state.songIds);
       if (plan.queue === 'load') return;
+    } else if (player.queue.some((x) => x.unavailable)) {
+      // Songs found since are swapped in, and the rest asked for again.
+      if (player.queue.some((x) => x.unavailable && songs.has(x.id))) {
+        olsAdopt(queueOf(state.songIds), state.currentIndex);
+      }
+      fillIn(s, state.songIds);
     }
     if (held) {
       // Stopped here on purpose. A pause from the room still lands, so that
       // the end of a call does not start this phone on a room that stopped.
       if (plan.play === false) {
         quiet();
-        olsSetPlaying(false);
+        setPlaying(false);
       }
       return;
     }
@@ -768,7 +857,7 @@ const guest = (() => {
     }
     if (plan.play !== null) {
       quiet();
-      olsSetPlaying(plan.play);
+      setPlaying(plan.play);
     }
   }
 
@@ -801,7 +890,17 @@ const guest = (() => {
     received(state: OlsPlaybackState): void {
       if (latest && state.revision <= latest.revision) return;
       latest = state;
-      if (pending && state.revision > pending.afterRevision) clearPending();
+      // The deadline here too: its timer does not run with the screen off.
+      if (
+        pending &&
+        state.revision > pending.afterRevision &&
+        (state.isPlaying === pending.play || Date.now() >= pending.deadline)
+      ) {
+        clearPending();
+      }
+    },
+    wake(): void {
+      for (const check of [...wakers]) check();
     },
     /** A request of this guest's was refused: show the room as it is. */
     refused(requestId: string | undefined): void {
@@ -821,9 +920,12 @@ const guest = (() => {
       // Heard here at once, not a round trip later; the host's answer either
       // agrees or, after a while, puts it back.
       clearPending();
+      const play = control.action === 'play';
       pending = {
         requestId,
+        play,
         afterRevision: latest?.revision ?? -1,
+        deadline: Date.now() + 5000,
         timer: setTimeout(() => {
           if (pending?.requestId !== requestId) return;
           pending = null;
@@ -831,10 +933,11 @@ const guest = (() => {
         }, 5000),
       };
       quiet();
-      olsSetPlaying(control.action === 'play');
+      setPlaying(play);
     },
     /** The player is between sources for a moment: what it reports is not a person. */
     settle(): void {
+      settledAt = Date.now();
       quiet();
     },
     toggle(): void {
@@ -853,7 +956,19 @@ const guest = (() => {
       this.request({ action: usePlayerStore.getState().isPlaying ? 'pause' : 'play' });
     },
     local(playing: boolean): void {
-      if (Date.now() < quietUntil || pending) return;
+      if (pending) return;
+      const now = Date.now();
+      // Inside a quiet spell, what the player says is mostly this module's own
+      // doing coming back, or a player between two songs. A stop a while after
+      // it was told to play, with no song change around, is neither: it is
+      // headphones out or a call, and missing it would have the next state
+      // start this phone's speaker.
+      if (
+        now < quietUntil &&
+        (playing || !told.play || now - told.at < 1000 || now - settledAt < 2000)
+      ) {
+        return;
+      }
       if (!playing) {
         if (!useListeningSession.getState().heldLocally) {
           bump('listening · held locally');
@@ -873,6 +988,9 @@ const guest = (() => {
       quietUntil = 0;
       leadMs = 0;
       calibrated = false;
+      told = { play: false, at: 0 };
+      settledAt = 0;
+      filling = null;
       clearPending();
       songs.clear();
       lookups.clear();
@@ -895,6 +1013,8 @@ export function initListeningSessions(): void {
     request: (control) => guest.request(control),
     toggle: () => guest.toggle(),
     local: (playing) => guest.local(playing),
+    status: () => guest.wake(),
+    quit,
   });
   usePlayerStore.subscribe((st, prev) => {
     const r = role();
@@ -916,18 +1036,8 @@ export function initListeningSessions(): void {
       session?.connection.ping(false);
     }
   });
-  useAuthStore.subscribe((auth) => {
-    const s = session;
-    if (!s) return;
-    if (!auth.offline && profileOf(auth.auth) === s.profile) return;
-    // Another profile is another library, and offline there is no server to
-    // read the room's songs from. Said on the way out, not waited on.
-    s.connection.send({
-      type: role() === 'host' ? 'session.end' : 'session.leave',
-      protocolVersion: 1,
-      requestId: olsRequestId(),
-    });
-    finish(null);
+  useAuthStore.subscribe(() => {
+    if (session && !profileCurrent(session)) quit();
   });
   AppState.addEventListener('change', (state) => {
     if (state !== 'active' || !session) return;
@@ -1017,6 +1127,8 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
         stateBytes: caps.limits.stateBytes,
       });
     } catch (e) {
+      // Ended on purpose while it opened (a profile change): already done with.
+      if (e instanceof OlsConnectionError && e.code === 'closed') return;
       bump('listening · start failed');
       finish(messageFor(e));
     }
@@ -1086,6 +1198,7 @@ export const useListeningSession = create<ListeningSessionState>((set, get) => (
         stateBytes: caps.limits.stateBytes,
       });
     } catch (e) {
+      if (e instanceof OlsConnectionError && e.code === 'closed') return;
       bump('listening · join failed');
       finish(messageFor(e));
     }

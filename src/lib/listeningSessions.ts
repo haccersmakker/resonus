@@ -330,7 +330,41 @@ export function olsErrorCode(body: unknown): string | null {
 
 // ── Addresses ───────────────────────────────────────────────────────────────
 
-const HOST_LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+const HOST_LABEL = /^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$/;
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+/**
+ * An IPv6 literal (without its brackets) in the one form a WHATWG `URL` writes
+ * it: lower case, no leading zeros, the longest run of zero groups (the first
+ * of equal ones, and only a run of two or more) written as `::`. Null when it
+ * is not one. Embedded IPv4 forms are refused rather than rewritten.
+ */
+function canonicalIpv6(text: string): string | null {
+  if (!/^[0-9a-f:]+$/.test(text) || text.includes(':::')) return null;
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const part = (h: string) => (h === '' ? [] : h.split(':'));
+  const head = part(halves[0]);
+  const tail = halves.length === 2 ? part(halves[1]) : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const groups = [...head, ...Array<string>(missing).fill('0'), ...tail];
+  if (!groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  const values = groups.map((g) => parseInt(g, 16).toString(16));
+  let best = -1;
+  let bestLen = 1;
+  for (let i = 0; i < 8; ) {
+    let j = i;
+    while (j < 8 && values[j] === '0') j++;
+    if (j - i > bestLen) {
+      best = i;
+      bestLen = j - i;
+    }
+    i = j === i ? i + 1 : j;
+  }
+  if (best === -1) return values.join(':');
+  return `${values.slice(0, best).join(':')}::${values.slice(best + bestLen).join(':')}`;
+}
 const PATH = /^(\/([A-Za-z0-9\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})*)*$/;
 const DEFAULT_PORT: Record<string, string> = { http: '80', https: '443', ws: '80', wss: '443' };
 
@@ -366,11 +400,20 @@ function parseUrl(input: string, schemes: readonly string[]): ParsedUrl | null {
   if (!schemes.includes(scheme)) return null;
   const authority = m[2];
   if (authority.includes('@')) return null;
-  const hp = authority.match(/^(\[[0-9A-Fa-f:.]+\]|[^:]+)(?::(\d{1,5}))?$/);
+  const hp = authority.match(/^(\[[0-9A-Fa-f:.]+\]|[^:[\]]+)(?::(\d{1,5}))?$/);
   if (!hp) return null;
   const hostname = hp[1].toLowerCase();
-  if (!hostname.startsWith('[') && !hostname.split('.').every((l) => HOST_LABEL.test(l))) {
-    return null;
+  if (hostname.startsWith('[')) {
+    // Only in the form a URL would write it: another spelling of the same
+    // address would be another library.
+    if (canonicalIpv6(hostname.slice(1, -1)) !== hostname.slice(1, -1)) return null;
+  } else {
+    const labels = hostname.split('.');
+    if (!labels.every((l) => HOST_LABEL.test(l))) return null;
+    // A name ending in a number is an IPv4 address to a URL, which rewrites
+    // `127.1` or `0x7f.0.0.1`; only the plain four-number form is taken.
+    const last = labels[labels.length - 1];
+    if ((/^\d+$/.test(last) || /^0x/.test(last)) && !IPV4.test(hostname)) return null;
   }
   let port: string | undefined = hp[2];
   if (port !== undefined) {
@@ -380,7 +423,9 @@ function parseUrl(input: string, schemes: readonly string[]): ParsedUrl | null {
   }
   const rawPath = m[3];
   if (!PATH.test(rawPath)) return null;
-  if (rawPath.split('/').some((seg) => seg === '.' || seg === '..')) return null;
+  // `%2e` is a dot to a URL too, and `/a/%2e%2e/b` is `/b`.
+  const dots = (seg: string) => seg.replace(/%2e/gi, '.');
+  if (rawPath.split('/').some((seg) => dots(seg) === '.' || dots(seg) === '..')) return null;
   return {
     scheme,
     host: port ? `${hostname}:${port}` : hostname,
@@ -756,6 +801,32 @@ export function planOlsGuest(
     else if (!state.isPlaying && local.isPlaying && !hostEnded) play = false;
   }
   return { queue, seekMs: seek, play };
+}
+
+/**
+ * The queue as a host's state carries it. All of it, unless it is longer than
+ * a room holds: then a window around the song playing, with more ahead than
+ * behind. `from` is where the last one started; it stays there while the song
+ * playing is well inside it, since a window that moved with every song would
+ * move under a guest's tap, and the song asked for would not be the one played.
+ */
+export function olsQueueWindow(
+  ids: readonly string[],
+  index: number,
+  maxBytes: number,
+  from: number,
+): { ids: string[]; start: number } {
+  let size = Math.min(ids.length, OLS_MAX_SONGS);
+  for (;;) {
+    const inside = index >= from + Math.floor(size / 8) && index < from + size - Math.floor(size / 4);
+    const start = Math.max(0, Math.min(inside ? from : index - Math.floor(size / 4), ids.length - size));
+    const slice = ids.slice(start, start + size);
+    // Each id costs its length and three characters of JSON around it; the
+    // rest of the message is well inside the margin.
+    const bytes = slice.reduce((n, id) => n + id.length + 3, 256);
+    if (size <= 1 || bytes <= maxBytes) return { ids: slice, start };
+    size = Math.floor(size / 2);
+  }
 }
 
 /** Whether a song can be named to a room: the server's own, by id. */
