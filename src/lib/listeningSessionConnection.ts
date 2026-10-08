@@ -201,6 +201,18 @@ export class OlsConnection {
             fail(new OlsConnectionError('invalid', 'The coordinator spoke before letting this client in'));
             return;
           }
+          // The room and the part in it are the ones the ticket was issued
+          // for. A coordinator that changes its mind between the two answers
+          // could turn a guest into a host that publishes its own queue.
+          const issued = this.access.room;
+          if (
+            message.room.id !== issued.id ||
+            message.room.role !== issued.role ||
+            message.room.selfParticipantId !== issued.selfParticipantId
+          ) {
+            fail(new OlsConnectionError('invalid', 'The coordinator let this client into another room'));
+            return;
+          }
           this.authenticated = true;
           this.latestRevision = message.room.state.revision;
           this.enqueue(async () => {

@@ -8,6 +8,7 @@
  * person's decision. The link's values are checked before anything is shown.
  */
 import Icon from '@/components/Icon';
+import { useLinkingURL } from 'expo-linking';
 import { useLocalSearchParams } from 'expo-router';
 import { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Share, Text, TextInput, View } from 'react-native';
@@ -18,7 +19,7 @@ import { useT } from '@/i18n';
 import {
   OLS_MAX_NAME_CHARS,
   normalizeOlsCoordinatorUrl,
-  olsInviteFromLinkParams,
+  olsInviteFromRoute,
   parseOlsInviteText,
   type OlsInvite,
 } from '@/lib/listeningSessions';
@@ -36,7 +37,8 @@ export default function ListenTogetherScreen() {
   const t = useT();
   const toast = useToast((s) => s.show);
   const params = useLocalSearchParams();
-  const linkInvite = useMemo(() => olsInviteFromLinkParams(params), [params]);
+  const linkingUrl = useLinkingURL();
+  const linkInvite = useMemo(() => olsInviteFromRoute(params, linkingUrl), [params, linkingUrl]);
   const linkBroken = !linkInvite && ['coordinator', 'server', 'libraryId', 'code'].some((k) => k in params);
   const auth = useAuthStore((s) => s.auth);
   const offline = useAuthStore((s) => s.offline);
@@ -243,7 +245,9 @@ export default function ListenTogetherScreen() {
               {t('What the others in the room see. Your account name on the server is never shared.')}
             </Text>
 
-            {!invite ? (
+            {/* A link replaces the form; a pasted invitation leaves it, so the
+                field it was pasted into can still be cleared. */}
+            {!linkInvite ? (
               <>
                 <Text style={settingsStyles.sectionTitle}>{t('Listening server')}</Text>
                 <TextInput

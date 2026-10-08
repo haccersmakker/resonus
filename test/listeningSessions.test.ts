@@ -23,6 +23,7 @@ import {
   normalizeOlsCode,
   normalizeOlsServerUrl,
   olsInviteFromLinkParams,
+  olsInviteFromRoute,
   olsInviteLink,
   olsPositionJumped,
   olsStateIsDiscontinuous,
@@ -157,6 +158,27 @@ describe('Invites', () => {
     // `%2541` is a literal "%41" in the code, which no code contains.
     const link = olsInviteLink(invite).replace('code=ABC234', 'code=ABC%2541');
     assert.equal(parseOlsInviteText(link), null);
+  });
+
+  it('survives the router decoding the link twice', () => {
+    const spaced = 'https://music.example/my%20music';
+    const inv = createOlsInvite('https://sessions.example', spaced, sha(spaced), 'ABC234')!;
+    const link = olsInviteLink(inv);
+    // What expo-router hands the screen: URLSearchParams, then
+    // useLocalSearchParams' own decodeURIComponent.
+    const routed = Object.fromEntries(
+      [...new URL(link.replace('resonus:', 'https:')).searchParams].map(([k, v]) => [k, decodeURIComponent(v)]),
+    );
+    assert.equal(routed.server, 'https://music.example/my music');
+    assert.equal(olsInviteFromLinkParams(routed), null);
+    assert.deepEqual(olsInviteFromRoute(routed, link), inv);
+    // Without that link, or with another one, it stays refused.
+    assert.equal(olsInviteFromRoute(routed, null), null);
+    assert.equal(olsInviteFromRoute(routed, olsInviteLink(invite)), null);
+    assert.equal(olsInviteFromRoute({}, link), null);
+    // Values that make an invite as they are need no link.
+    const plain = Object.fromEntries(new URL(olsInviteLink(invite).replace('resonus:', 'https:')).searchParams);
+    assert.deepEqual(olsInviteFromRoute(plain, null), invite);
   });
 });
 
@@ -424,6 +446,61 @@ const hostState = (ids: string[], index = 0, positionMs = 0, isPlaying = true) =
   type: 'state.update' as const,
   protocolVersion: 1 as const,
   state: { songIds: ids, currentIndex: index, positionMs, isPlaying },
+});
+
+/** A socket that answers the ticket with whatever `reply` says, and nothing else. */
+function fakeSocket(reply: (sent: string) => string): (url: string) => OlsSocket {
+  return () => {
+    const s: OlsSocket & { readyState: number } = {
+      readyState: 0,
+      send(data: string) {
+        const out = reply(data);
+        setTimeout(() => s.onmessage?.({ data: out }), 0);
+      },
+      close() {
+        s.readyState = 3;
+      },
+      onopen: null,
+      onmessage: null,
+      onerror: null,
+      onclose: null,
+    };
+    setTimeout(() => {
+      s.readyState = 1;
+      s.onopen?.({});
+    }, 0);
+    return s;
+  };
+}
+
+describe('A coordinator that changes its story', () => {
+  const room = { id: 'r1', code: 'ABC234', selfParticipantId: 'p1', role: 'guest' as const, participants: [], state: state() };
+  const access: OlsAccess = {
+    protocolVersion: 1,
+    room,
+    connectionUrl: 'wss://sessions.example/v1/socket',
+    connectionToken: 't',
+  };
+  const events = { onMessage: () => {}, onClose: () => {} };
+  const lie = (patch: object) =>
+    fakeSocket(() => JSON.stringify({ type: 'authenticated', protocolVersion: 1, room: { ...room, ...patch } }));
+
+  it('is let in when the socket says what the bootstrap said', async () => {
+    const c = new OlsConnection(access, 'https://sessions.example', lie({}), events);
+    assert.equal((await c.open()).role, 'guest');
+    c.close();
+  });
+
+  for (const [name, patch] of [
+    ['turns a guest into a host', { role: 'host' }],
+    ['moves it to another room', { id: 'r2' }],
+    ['gives it someone else’s seat', { selfParticipantId: 'p2' }],
+  ] as const) {
+    it(`is refused when it ${name}`, async () => {
+      const c = new OlsConnection(access, 'https://sessions.example', lie(patch), events);
+      await assert.rejects(c.open(), (e: unknown) => e instanceof OlsConnectionError && e.code === 'invalid');
+    });
+  }
 });
 
 describe('A room, end to end', () => {

@@ -354,6 +354,21 @@ const host = (() => {
     // Signing out empties the queue on its way, and that is not a thing to
     // tell a room that is about to end anyway.
     if (profileOf(useAuthStore.getState().auth) !== s.profile) return;
+    // The player refuses a host other songs only once it is one, so a station
+    // or a phone file started while the room was opening ends up here. Its ids
+    // mean nothing on the guests' servers: the room ends instead.
+    if (!usePlayerStore.getState().queue.every(isOlsServerSong)) {
+      if (useListeningSession.getState().status !== 'connected') return;
+      void useListeningSession
+        .getState()
+        .leave()
+        .then(() => {
+          const error = messageFor(fail('songs'));
+          useListeningSession.setState({ error });
+          useToast.getState().show(tg(error));
+        });
+      return;
+    }
     const st = state(s);
     if (s.connection.send({ type: 'state.update', protocolVersion: 1, state: st })) {
       last = { at: Date.now(), positionMs: st.positionMs, isPlaying: st.isPlaying };

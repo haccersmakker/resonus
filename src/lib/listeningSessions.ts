@@ -509,6 +509,37 @@ export function olsInviteFromLinkParams(p: {
 }
 
 /**
+ * The invite the link screen was opened with. expo-router decodes a query value
+ * twice (reading the URL, then again in `useLocalSearchParams`), which turns a
+ * `%20` in an address into a space. So when the values don't make an invite,
+ * the link the app was opened with is read once, and taken if it is the one
+ * those values came from.
+ */
+export function olsInviteFromRoute(
+  params: Record<string, unknown>,
+  linkingUrl: string | null,
+): OlsInvite | null {
+  const direct = olsInviteFromLinkParams(params);
+  if (direct || !linkingUrl) return direct;
+  const parsed = parseOlsInviteText(linkingUrl);
+  if (!parsed || !('invite' in parsed)) return null;
+  const { invite } = parsed;
+  const twice = (v: string) => {
+    try {
+      return decodeURIComponent(v);
+    } catch {
+      return v;
+    }
+  };
+  return params.coordinator === twice(invite.coordinator) &&
+    params.server === twice(invite.mediaProfile.server) &&
+    params.libraryId === invite.mediaProfile.libraryId &&
+    params.code === invite.code
+    ? invite
+    : null;
+}
+
+/**
  * What somebody pasted into the code field: the JSON invite, the app's link,
  * the whole message the share sheet sent (both of those inside some text), or
  * just a code. Null when it is none of them.
